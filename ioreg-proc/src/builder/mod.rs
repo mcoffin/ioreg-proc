@@ -1,0 +1,351 @@
+use super::{IoRegs, Register, RegisterType, RegisterField, RegisterFieldOffset, RegisterPropertyValue};
+use quote::{ ToTokens, quote };
+use std::borrow::Cow;
+use std::collections::{LinkedList, HashMap};
+
+pub mod union;
+
+pub(crate) trait RegisterExt {
+    fn is_write_only(&self) -> bool;
+    fn byte_start(&self) -> u64;
+}
+
+impl RegisterExt for Register {
+    fn is_write_only(&self) -> bool {
+        self.fields.iter().all(|f| {
+            f.properties
+                .as_ref()
+                .and_then(|p| p.properties.iter().map(|p| p.value).find(|&v| v == RegisterPropertyValue::WriteOnly))
+                .is_some()
+        })
+    }
+
+    fn byte_start(&self) -> u64 {
+        self.offset.value()
+    }
+}
+
+trait RegisterFieldExt {
+    fn shift_expr(&self) -> &syn::LitInt;
+    fn mask_expr(&self) -> syn::LitInt;
+}
+
+impl RegisterFieldExt for RegisterField {
+    fn shift_expr(&self) -> &syn::LitInt {
+        match &self.offset {
+            &RegisterFieldOffset::Bit(ref low) => low,
+            &RegisterFieldOffset::BitRange(ref range) => &range.start,
+        }
+    }
+
+    fn mask_expr(&self) -> syn::LitInt {
+        use syn::IntSuffix;
+        let span = self.offset.span();
+        let value = (1 << self.offset.bit_size() as u64) - 1;
+        syn::LitInt::new(value, IntSuffix::None, span)
+    }
+}
+
+fn register_type(ty: RegisterType) -> impl ToTokens {
+    match ty {
+        RegisterType::Reg8 => quote!(u8),
+        RegisterType::Reg16 => quote!(u16),
+        RegisterType::Reg32 => quote!(u32),
+        RegisterType::Reg64 => quote!(u64),
+    }
+}
+
+fn register_field_primitive(field: &RegisterField) -> syn::Result<syn::export::TokenStream2> {
+    match &field.offset {
+        &RegisterFieldOffset::Bit(..) => Ok(quote!(bool)),
+        &RegisterFieldOffset::BitRange(ref range) => {
+            let size = range.bit_size();
+            if size <= 8 {
+                Ok(quote!(u8))
+            } else if size <= 16 {
+                Ok(quote!(u16))
+            } else if size <= 32 {
+                Ok(quote!(u32))
+            } else if size <= 64 {
+                Ok(quote!(u64))
+            } else {
+                Err(syn::Error::new(range.span(), format!("Invalid register field size: {}", size)))
+            }
+        },
+    }
+}
+
+fn camel_case_cow<'a, T: ?Sized>(input: Cow<'a, T>) -> Cow<'a, T> where
+    T: heck::CamelCase + ToOwned,
+{
+    use heck::CamelCase;
+    Cow::Owned(input.to_camel_case())
+}
+
+fn build_register_field_enum(field: &RegisterField) -> syn::Result<Option<(syn::Ident, syn::export::TokenStream2)>> {
+    if let Some(variants) = field.variants.as_ref() {
+        let enum_ident = {
+            let mut enum_ident = field.ident.to_string().into();
+            enum_ident = camel_case_cow(enum_ident);
+            syn::Ident::new(enum_ident.as_ref(), field.ident.span())
+        };
+        let primitive = register_field_primitive(field)?;
+        let variant_idents = variants.variants.iter()
+            .map(|v| &v.ident);
+        let variant_values = variants.variants.iter()
+            .map(|v| &v.value);
+        let enum_ident_ref = &enum_ident;
+        let definition = quote! {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            #[repr(#primitive)]
+            pub enum #enum_ident_ref {
+                #( #variant_idents = #variant_values ),*
+            }
+        };
+        Ok(Some((enum_ident, definition)))
+    } else {
+        Ok(None)
+    }
+}
+
+pub struct RegisterStructIdents {
+    pub base: syn::Ident,
+    pub update: syn::Ident,
+    pub get: syn::Ident,
+}
+
+pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(RegisterStructIdents, syn::export::TokenStream2)> {
+    let struct_idents = {
+        let struct_ident = {
+            use heck::CamelCase;
+            let mut struct_ident = register.ident.to_string().into();
+            struct_ident = camel_case_cow(struct_ident);
+            syn::Ident::new(&struct_ident, register.ident.span())
+        };
+        let struct_ident_str = struct_ident.to_string();
+        let update_ident = syn::Ident::new(&format!("{}{}", &struct_ident_str, "Update"), register.ident.span());
+        let get_ident = syn::Ident::new(&format!("{}{}", &struct_ident_str, "Get"), register.ident.span());
+        RegisterStructIdents {
+            base: struct_ident,
+            update: update_ident,
+            get: get_ident,
+        }
+    };
+    let mod_ident = {
+        use heck::SnakeCase;
+        let s = <str as SnakeCase>::to_snake_case(register.ident.to_string().as_ref());
+        syn::Ident::new(&s, register.ident.span())
+    };
+    let mut enum_register_definitions = LinkedList::new();
+    let mut enum_register_idents = HashMap::new();
+    for field in register.fields.iter() {
+        if let Some((enum_ident, ts)) = build_register_field_enum(field)? {
+            let mod_ident = &mod_ident;
+            let enum_path: syn::Path = syn::parse2(quote!(#mod_ident::#enum_ident))?;
+            enum_register_idents.insert(field.ident.clone(), enum_path);
+            enum_register_definitions.push_back(ts);
+        }
+    }
+    let mod_definition = quote! {
+        pub mod #mod_ident {
+            #( #enum_register_definitions )*
+        }
+    };
+    let register_ty = &register.ty;
+    let struct_ident = &struct_idents.base;
+    let update_ident = &struct_idents.update;
+    let get_ident = &struct_idents.get;
+    let struct_definition = quote! {
+        pub struct #struct_ident {
+            value: ::volatile_cell::VolatileCell<#register_ty>,
+        }
+
+        impl #struct_ident {
+            #[doc="Create a new updater"]
+            #[inline(always)]
+            pub fn update<'a>(&'a self) -> #update_ident<'a> {
+                #update_ident::new(self)
+            }
+
+            #[doc="Create a getter representing the current state of the register"]
+            #[inline(always)]
+            pub fn get(&self) -> #get_ident {
+                #get_ident::new(self)
+            }
+        }
+    };
+    let get_function_definitions = register.fields.iter().filter_map(|field| {
+        let is_write_only = field.properties
+            .as_ref()
+            .and_then(|props| {
+                use std::iter::Iterator;
+                props.properties.iter().find(|&p| p.value == RegisterPropertyValue::ReadOnly)
+            })
+            .is_some();
+        if is_write_only {
+            return None;
+        }
+        let getter_ident = {
+            use heck::SnakeCase;
+            let s = <str as SnakeCase>::to_snake_case(field.ident.to_string().as_ref());
+            syn::Ident::new(&s, field.ident.span())
+        };
+        let mut is_enum = false;
+        let field_ty: Cow<syn::Path> = enum_register_idents.get(&field.ident)
+            .map(Cow::Borrowed)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                is_enum = true;
+                register_field_primitive(&field)
+                    .and_then(syn::parse2)
+                    .map(Cow::Owned)
+            })
+            .unwrap(); // TODO: get rid of this unwrap
+        let field_ty = field_ty.as_ref();
+        let shift = field.shift_expr();
+        let mask = field.mask_expr();
+        let primitive_expr = quote!((self.value >> #shift) & #mask);
+        let value = if field.offset.bit_size() == 1 {
+            quote!(#primitive_expr != 0x0)
+        } else {
+            quote!(unimplemented!())
+        };
+        Some(quote! {
+            #[inline(always)]
+            pub fn #getter_ident(&self) -> #field_ty {
+                #value
+            }
+        })
+    });
+    let update_function_definitions = register.fields.iter().filter_map(|field| {
+        use std::borrow::Borrow;
+        let is_read_only = field.properties
+            .as_ref()
+            .and_then(|props| {
+                use std::iter::Iterator;
+                props.properties.iter().find(|&p| p.value == RegisterPropertyValue::ReadOnly)
+            })
+            .is_some();
+        if is_read_only {
+            return None;
+        }
+        let setter_ident = {
+            use heck::SnakeCase;
+            let s = <str as SnakeCase>::to_snake_case(field.ident.to_string().as_ref());
+            syn::Ident::new(&format!("set_{}", s), field.ident.span())
+        };
+        let mut is_enum = false;
+        let field_ty: Cow<syn::Path> = enum_register_idents.get(&field.ident)
+            .map(Cow::Borrowed)
+            .map(Ok)
+            .unwrap_or_else(|| {
+                is_enum = true;
+                register_field_primitive(&field)
+                    .and_then(syn::parse2)
+                    .map(Cow::Owned)
+            })
+            .unwrap(); // TODO: get rid of this unwrap
+        let field_ty = field_ty.as_ref();
+        let shift = field.shift_expr();
+        let mask = field.mask_expr();
+        let unpacked_ty = &register.ty;
+        Some(quote! {
+            #[inline(always)]
+            pub fn #setter_ident<'b>(&'b mut self, new_value: #field_ty) -> &'b mut Self {
+                self.value = (self.value & !(#mask << #shift)) | ((new_value as #unpacked_ty) & #mask) << #shift;
+                self.mask |= #mask << #shift;
+                self
+            }
+        })
+    });
+    let get_definition = {
+        quote! {
+            #[derive(Clone)]
+            pub struct #get_ident {
+                value: #register_ty,
+            }
+
+            impl #get_ident {
+                #[doc = "Create a getter reflecting the current value of the register"]
+                #[inline(always)]
+                pub fn new(reg: & #struct_ident) -> #get_ident {
+                    #get_ident {
+                        value: reg.value.get(),
+                    }
+                }
+
+                #( #get_function_definitions )*
+            }
+        }
+    };
+    let update_definition = {
+        let mut clear: u32 = 0;
+        for field in register.fields.iter() {
+            if field.properties.as_ref().and_then(|p| p.properties.iter().map(|p| p.value).find(|&value| value == RegisterPropertyValue::SetToClear)).is_some() {
+                let mask = field.mask_expr().value() as u32;
+                clear |= mask;
+            }
+        }
+        let initial_value = if register.is_write_only() {
+            quote!(0)
+        } else {
+            quote! {
+                if self.write_only {
+                    0
+                } else {
+                    self.reg.value.get()
+                }
+            }
+        };
+        quote! {
+            pub struct #update_ident<'a> {
+                value: #register_ty,
+                mask: #register_ty,
+                write_only: bool,
+                reg: &'a #struct_ident,
+            }
+
+            impl<'a> #update_ident<'a> {
+                #[inline(always)]
+                pub fn new(reg: &'a #struct_ident) -> #update_ident<'a> {
+                    #update_ident {
+                        value: 0,
+                        mask: 0,
+                        write_only: false,
+                        reg: reg,
+                    }
+                }
+
+                #[inline(always)]
+                pub fn new_ignoring_state(reg: &'a #struct_ident) -> #update_ident<'a> {
+                    #update_ident {
+                        value: 0,
+                        mask: 0,
+                        write_only: true,
+                        reg: reg,
+                    }
+                }
+
+                #( #update_function_definitions )*
+            }
+
+            impl<'a> Drop for #update_ident<'a> {
+                #[inline(always)]
+                fn drop(&mut self) {
+                    let clear_mask = #clear as #register_ty;
+                    if self.mask != 0 {
+                        let v: #register_ty = #initial_value & ! clear_mask & ! self.mask;
+                        self.reg.value.set(self.value | v);
+                    }
+                }
+            }
+        }
+    };
+    let ret = quote! {
+        #mod_definition
+        #struct_definition
+        #update_definition
+        #get_definition
+    };
+    Ok((struct_idents, ret))
+}

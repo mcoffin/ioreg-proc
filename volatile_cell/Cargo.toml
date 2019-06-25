@@ -1,0 +1,20 @@
+[package]
+
+name = "volatile_cell"
+version = "1.0.0"
+authors = ["Vladimir Pouzanov <farcaller@gmail.com>"]
+
+[lib]
+name = "volatile_cell"
+path = "lib.rs"
+test = false
+doctest = false
+doc = true
+crate-type = ["rlib"]
+
+[features]
+replayer = ["expectest"]
+
+[dependencies.expectest]
+version = "^0.6"
+optional = true

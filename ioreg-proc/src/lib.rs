@@ -1,9 +1,11 @@
+#![recursion_limit="128"]
 #![allow(dead_code)]
 
 extern crate proc_macro;
 extern crate syn;
 extern crate quote;
 extern crate proc_macro2;
+extern crate heck;
 
 mod builder;
 
@@ -12,6 +14,7 @@ use syn::{parse_macro_input, braced, bracketed, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use std::iter;
+use quote::{ToTokens, quote};
 
 fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
     let value = value.as_ref();
@@ -24,12 +27,12 @@ fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result
 }
 
 pub(crate) struct IoRegs {
-    name: syn::Ident,
-    location_token: Token![@],
-    location: syn::LitInt,
-    equals_token: Token![=],
-    brace_token: token::Brace,
-    registers: Punctuated<RegisterOrGroup, Token![,]>,
+    pub(crate) name: syn::Ident,
+    pub(crate) location_token: Token![@],
+    pub(crate) location: syn::LitInt,
+    pub(crate) equals_token: Token![=],
+    pub(crate) brace_token: token::Brace,
+    pub(crate) registers: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
 impl Parse for IoRegs {
@@ -54,6 +57,31 @@ pub(crate) enum RegisterType {
     Reg64,
 }
 
+impl RegisterType {
+    fn byte_length(self) -> u64 {
+        use RegisterType::*;
+        match self {
+            Reg8 => 1,
+            Reg16 => 2,
+            Reg32 => 4,
+            Reg64 => 8,
+        }
+    }
+}
+
+impl ToTokens for RegisterType {
+    fn to_tokens(&self, output: &mut proc_macro2::TokenStream) {
+        use RegisterType::*;
+        let tokens = match *self {
+            Reg8 => quote!(u8),
+            Reg16 => quote!(u16),
+            Reg32 => quote!(u32),
+            Reg64 => quote!(u64),
+        };
+        output.extend(tokens);
+    }
+}
+
 impl Parse for RegisterType {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ty: syn::Ident = input.parse()?;
@@ -67,7 +95,7 @@ impl Parse for RegisterType {
     }
 }
 
-enum RegisterOrGroup {
+pub(crate) enum RegisterOrGroup {
     Single(Register),
     Group(RegisterGroup),
 }
@@ -83,15 +111,15 @@ impl Parse for RegisterOrGroup {
     }
 }
 
-struct RegisterGroup {
-    offset: syn::LitInt,
-    arrow_token: Token![=>],
-    group_ident: syn::Ident,
-    ident: syn::Ident,
-    bracket_token: token::Bracket,
-    count: syn::LitInt,
-    brace_token: token::Brace,
-    fields: Punctuated<Register, Token![,]>,
+pub(crate) struct RegisterGroup {
+    pub(crate) offset: syn::LitInt,
+    pub(crate) arrow_token: Token![=>],
+    pub(crate) group_ident: syn::Ident,
+    pub(crate) ident: syn::Ident,
+    pub(crate) bracket_token: token::Bracket,
+    pub(crate) count: syn::LitInt,
+    pub(crate) brace_token: token::Brace,
+    pub(crate) fields: Punctuated<Register, Token![,]>,
 }
 
 impl Parse for RegisterGroup {
@@ -164,6 +192,22 @@ impl Parse for LitIntRange {
 enum RegisterFieldOffset {
     Bit(syn::LitInt),
     BitRange(LitIntRange),
+}
+
+impl RegisterFieldOffset {
+    pub(crate) fn bit_size(&self) -> u64 {
+        match self {
+            &RegisterFieldOffset::Bit(..) => 1,
+            &RegisterFieldOffset::BitRange(ref range) => range.bit_size(),
+        }
+    }
+
+    pub(crate) fn span(&self) -> proc_macro2::Span {
+        match self {
+            &RegisterFieldOffset::Bit(ref v) => v.span(),
+            &RegisterFieldOffset::BitRange(ref range) => range.span(),
+        }
+    }
 }
 
 impl Parse for RegisterFieldOffset {
@@ -308,10 +352,10 @@ fn parse_optional_register_properties(input: ParseStream) -> syn::Result<Option<
     }))
 }
 
-struct RegisterVariant {
-    value: syn::LitInt,
+pub(crate) struct RegisterVariant {
+    pub(crate) value: syn::LitInt,
     arrow_token: Token![=>],
-    ident: syn::Ident,
+    pub(crate) ident: syn::Ident,
 }
 
 impl Parse for RegisterVariant {
@@ -363,6 +407,8 @@ impl Parse for RegisterField {
 
 #[proc_macro]
 pub fn ioregs(item: TokenStream) -> TokenStream {
-    let _input = parse_macro_input!(item as IoRegs);
-    TokenStream::new()
+    let input = parse_macro_input!(item as IoRegs);
+    let output = builder::union::build_union(&input)
+        .expect("failed to build union");
+    TokenStream::from(output)
 }
