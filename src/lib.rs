@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 extern crate proc_macro;
 extern crate syn;
 extern crate quote;
@@ -5,11 +7,20 @@ extern crate proc_macro2;
 
 mod builder;
 
-use std::convert::TryFrom;
-use proc_macro::{TokenStream, TokenTree};
-use syn::{parse_macro_input, braced, parenthesized, token, Token};
+use proc_macro::TokenStream;
+use syn::{parse_macro_input, braced, bracketed, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+
+fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
+    let value = value.as_ref();
+    input.parse()
+        .and_then(|ident: syn::Ident| if &ident.to_string() == value {
+            Ok(ident)
+        } else {
+            Err(syn::Error::new(ident.span(), format!("expected {}", value)))
+        })
+}
 
 pub(crate) struct IoRegs {
     name: syn::Ident,
@@ -17,7 +28,7 @@ pub(crate) struct IoRegs {
     location: syn::LitInt,
     equals_token: Token![=],
     brace_token: token::Brace,
-    registers: Punctuated<Register, Token![,]>,
+    registers: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
 impl Parse for IoRegs {
@@ -29,7 +40,7 @@ impl Parse for IoRegs {
             location: input.parse()?,
             equals_token: input.parse()?,
             brace_token: braced!(content in input),
-            registers: content.parse_terminated(Register::parse)?,
+            registers: content.parse_terminated(RegisterOrGroup::parse)?,
         })
     }
 }
@@ -52,6 +63,50 @@ impl Parse for RegisterType {
             "reg64" => Ok(RegisterType::Reg64),
             _ => Err(syn::Error::new(ty.span(), format!("Invalid ioregs register type: {}", &ty))),
         }
+    }
+}
+
+enum RegisterOrGroup {
+    Single(Register),
+    Group(RegisterGroup),
+}
+
+impl Parse for RegisterOrGroup {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // TODO: improve the error messages that this would generate to indicate all options
+        if input.fork().parse::<RegisterGroup>().is_ok() {
+            Ok(RegisterOrGroup::Group(input.parse()?))
+        } else {
+            Ok(RegisterOrGroup::Single(input.parse()?))
+        }
+    }
+}
+
+struct RegisterGroup {
+    offset: syn::LitInt,
+    arrow_token: Token![=>],
+    group_ident: syn::Ident,
+    ident: syn::Ident,
+    bracket_token: token::Bracket,
+    count: syn::LitInt,
+    brace_token: token::Brace,
+    fields: Punctuated<Register, Token![,]>,
+}
+
+impl Parse for RegisterGroup {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let bracket_content;
+        let brace_content;
+        Ok(RegisterGroup {
+            offset: input.parse()?,
+            arrow_token: input.parse()?,
+            group_ident: input.call(|s| parse_exact_ident(s, "group"))?,
+            ident: input.parse()?,
+            bracket_token: bracketed!(bracket_content in input),
+            count: bracket_content.parse()?,
+            brace_token: braced!(brace_content in input),
+            fields: brace_content.parse_terminated(Register::parse)?,
+        })
     }
 }
 
@@ -141,10 +196,41 @@ impl Parse for RegisterProperty {
     }
 }
 
+enum RegisterPropertyList {
+    Single(RegisterProperty),
+    Multiple {
+        paren_token: token::Paren,
+        properties: Punctuated<RegisterProperty, Token![,]>,
+    }
+}
+
+impl RegisterPropertyList {
+    fn parse_multiple(input: ParseStream) -> syn::Result<RegisterPropertyList> {
+        let content: syn::parse::ParseBuffer<'_>;
+        let paren_token: token::Paren = parenthesized!(content in input);
+        let properties: Punctuated<RegisterProperty, Token![,]> =
+            content.parse_terminated(RegisterProperty::parse)?;
+        Ok(RegisterPropertyList::Multiple {
+            paren_token: paren_token,
+            properties: properties,
+        })
+    }
+}
+
+impl Parse for RegisterPropertyList {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let has_paren = input.peek(token::Paren);
+        if has_paren {
+            RegisterPropertyList::parse_multiple(input)
+        } else {
+            Ok(RegisterPropertyList::Single(input.parse()?))
+        }
+    }
+}
+
 struct RegisterProperties {
     colon_token: Token![:],
-    paren_token: token::Paren,
-    properties: Punctuated<RegisterProperty, Token![,]>,
+    properties: RegisterPropertyList,
 }
 
 fn parse_optional_register_properties(input: ParseStream) -> syn::Result<Option<RegisterProperties>> {
@@ -152,11 +238,9 @@ fn parse_optional_register_properties(input: ParseStream) -> syn::Result<Option<
     if !has_colon {
         return Ok(None);
     }
-    let content;
     Ok(Some(RegisterProperties {
         colon_token: input.parse()?,
-        paren_token: parenthesized!(content in input),
-        properties: content.parse_terminated(RegisterProperty::parse)?,
+        properties: input.parse()?,
     }))
 }
 
