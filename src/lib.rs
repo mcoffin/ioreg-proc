@@ -121,10 +121,44 @@ fn parse_optional_register_properties(input: ParseStream) -> syn::Result<Option<
     }))
 }
 
+struct RegisterVariant {
+    value: syn::LitInt,
+    arrow_token: Token![=>],
+    ident: syn::Ident,
+}
+
+impl Parse for RegisterVariant {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(RegisterVariant {
+            value: input.parse()?,
+            arrow_token: input.parse()?,
+            ident: input.parse()?,
+        })
+    }
+}
+
+struct RegisterVariants {
+    brace_token: token::Brace,
+    variants: Punctuated<RegisterVariant, Token![,]>,
+}
+
+fn parse_optional_register_variants(input: ParseStream) -> syn::Result<Option<RegisterVariants>> {
+    let has_brace = input.peek(token::Brace);
+    if !has_brace {
+        return Ok(None)
+    }
+    let content;
+    Ok(Some(RegisterVariants {
+        brace_token: braced!(content in input),
+        variants: content.parse_terminated(RegisterVariant::parse)?,
+    }))
+}
+
 struct RegisterField {
     offset: RegisterFieldOffset,
     arrow_token: Token![=>],
     ident: syn::Ident,
+    variants: Option<RegisterVariants>,
     properties: Option<RegisterProperties>,
 }
 
@@ -134,6 +168,7 @@ impl Parse for RegisterField {
             offset: input.parse()?,
             arrow_token: input.parse()?,
             ident: input.parse()?,
+            variants: input.call(parse_optional_register_variants)?,
             properties: input.call(parse_optional_register_properties)?,
         })
     }
