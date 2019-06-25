@@ -1,5 +1,9 @@
 extern crate proc_macro;
 extern crate syn;
+extern crate quote;
+extern crate proc_macro2;
+
+mod builder;
 
 use std::convert::TryFrom;
 use proc_macro::{TokenStream, TokenTree};
@@ -7,7 +11,7 @@ use syn::{parse_macro_input, braced, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 
-struct IoRegs {
+pub(crate) struct IoRegs {
     name: syn::Ident,
     location_token: Token![@],
     location: syn::LitInt,
@@ -30,16 +34,22 @@ impl Parse for IoRegs {
     }
 }
 
-#[derive(Debug)]
-enum RegisterType {
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum RegisterType {
+    Reg8,
+    Reg16,
     Reg32,
+    Reg64,
 }
 
 impl Parse for RegisterType {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ty: syn::Ident = input.parse()?;
         match ty.to_string().as_ref() {
+            "reg8" => Ok(RegisterType::Reg8),
+            "reg16" => Ok(RegisterType::Reg16),
             "reg32" => Ok(RegisterType::Reg32),
+            "reg64" => Ok(RegisterType::Reg64),
             _ => Err(syn::Error::new(ty.span(), format!("Invalid ioregs register type: {}", &ty))),
         }
     }
@@ -68,15 +78,42 @@ impl Parse for Register {
     }
 }
 
+pub(crate) struct LitIntRange {
+    pub(crate) start: syn::LitInt,
+    pub(crate) range_sep: Token![..],
+    pub(crate) end: syn::LitInt,
+}
+
+impl LitIntRange {
+    pub(crate) fn bit_size(&self) -> u64 {
+        self.end.value() - self.start.value() + 1
+    }
+
+    pub(crate) fn span(&self) -> proc_macro2::Span {
+        // TODO: nightly could provide better support here
+        self.start.span()
+    }
+}
+
+impl Parse for LitIntRange {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(LitIntRange {
+            start: input.parse()?,
+            range_sep: input.parse()?,
+            end: input.parse()?,
+        })
+    }
+}
+
 enum RegisterFieldOffset {
     Bit(syn::LitInt),
-    BitRange(syn::ExprRange),
+    BitRange(LitIntRange),
 }
 
 impl Parse for RegisterFieldOffset {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // TODO: improve the error messages that this would generate to indicate all options
-        if input.fork().parse::<syn::ExprRange>().is_ok() {
+        if input.fork().parse::<LitIntRange>().is_ok() {
             Ok(RegisterFieldOffset::BitRange(input.parse()?))
         } else {
             Ok(RegisterFieldOffset::Bit(input.parse()?))
@@ -88,6 +125,7 @@ enum RegisterProperty {
     SetToClear,
     WriteOnly,
     ReadOnly,
+    ReadWrite
 }
 
 impl Parse for RegisterProperty {
@@ -97,6 +135,7 @@ impl Parse for RegisterProperty {
             "set_to_clear" => Ok(RegisterProperty::SetToClear),
             "wo" => Ok(RegisterProperty::WriteOnly),
             "ro" => Ok(RegisterProperty::ReadOnly),
+            "rw" => Ok(RegisterProperty::ReadWrite),
             _ => Err(syn::Error::new(ident.span(), format!("Invalid ioregs register property: {}", ident))),
         }
     }
