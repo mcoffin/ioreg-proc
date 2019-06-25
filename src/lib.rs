@@ -11,6 +11,7 @@ use proc_macro::TokenStream;
 use syn::{parse_macro_input, braced, bracketed, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+use std::iter;
 
 fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
     let value = value.as_ref();
@@ -176,23 +177,53 @@ impl Parse for RegisterFieldOffset {
     }
 }
 
-enum RegisterProperty {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisterPropertyValue {
     SetToClear,
     WriteOnly,
     ReadOnly,
     ReadWrite
 }
 
+impl RegisterPropertyValue {
+    fn is_access_modifier(self) -> bool {
+        use RegisterPropertyValue::*;
+        match self {
+            WriteOnly => true,
+            ReadOnly => true,
+            ReadWrite => true,
+            _ => false,
+        }
+    }
+}
+
+struct RegisterProperty {
+    value: RegisterPropertyValue,
+    span: proc_macro2::Span,
+}
+
+impl RegisterProperty {
+    #[inline(always)]
+    fn is_access_modifier(&self) -> bool {
+        self.value.is_access_modifier()
+    }
+}
+
 impl Parse for RegisterProperty {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let ident: syn::Ident = input.parse()?;
-        match ident.to_string().as_ref() {
-            "set_to_clear" => Ok(RegisterProperty::SetToClear),
-            "wo" => Ok(RegisterProperty::WriteOnly),
-            "ro" => Ok(RegisterProperty::ReadOnly),
-            "rw" => Ok(RegisterProperty::ReadWrite),
+        use RegisterPropertyValue::*;
+        let value = match ident.to_string().as_ref() {
+            "set_to_clear" => Ok(SetToClear),
+            "wo" => Ok(WriteOnly),
+            "ro" => Ok(ReadOnly),
+            "rw" => Ok(ReadWrite),
             _ => Err(syn::Error::new(ident.span(), format!("Invalid ioregs register property: {}", ident))),
-        }
+        };
+        value.map(|v| RegisterProperty {
+            value: v,
+            span: ident.span(),
+        })
     }
 }
 
@@ -210,10 +241,43 @@ impl RegisterPropertyList {
         let paren_token: token::Paren = parenthesized!(content in input);
         let properties: Punctuated<RegisterProperty, Token![,]> =
             content.parse_terminated(RegisterProperty::parse)?;
-        Ok(RegisterPropertyList::Multiple {
+        let ret = RegisterPropertyList::Multiple {
             paren_token: paren_token,
             properties: properties,
-        })
+        };
+        ret.validate()?;
+        Ok(ret)
+    }
+
+    fn span(&self) -> proc_macro2::Span {
+        // TODO: improve span handling for Multiple case
+        match self {
+            &RegisterPropertyList::Single(ref prop) => prop.span,
+            &RegisterPropertyList::Multiple { ref paren_token, .. } => paren_token.span,
+        }
+    }
+
+    fn validate(&self) -> syn::Result<()> {
+        let access_modifiers = self.iter()
+            .filter(|&prop| prop.is_access_modifier())
+            .count();
+        if access_modifiers > 1 {
+            return Err(syn::Error::new(self.span(), format!("more than one access modifier found for register field")));
+        }
+        let set_to_clear_conflicts = self.iter()
+            .filter(|&prop| prop.value == RegisterPropertyValue::SetToClear || prop.value == RegisterPropertyValue::ReadOnly)
+            .count();
+        if set_to_clear_conflicts >= 2 {
+            return Err(syn::Error::new(self.span(), format!("set_to_clear and ro cannot be set on the same register field")));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn iter<'a>(&'a self) -> Box<Iterator<Item=&'a RegisterProperty> + 'a> {
+        match self {
+            &RegisterPropertyList::Single(ref prop) => Box::new(iter::once(prop)),
+            &RegisterPropertyList::Multiple { ref properties, .. } => Box::new(properties.iter()),
+        }
     }
 }
 
