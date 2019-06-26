@@ -18,3 +18,7 @@ features = [ "full" ]
 
 [dependencies.volatile_cell]
 path = "../volatile_cell"
+
+[features]
+default = []
+x86_64_bmi1_optimization = []

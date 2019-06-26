@@ -5,6 +5,7 @@ use std::collections::{LinkedList, HashMap};
 use std::iter;
 
 pub mod union;
+pub mod casing;
 
 pub(crate) trait RegisterExt {
     fn is_write_only(&self) -> bool;
@@ -29,6 +30,7 @@ impl RegisterExt for Register {
 trait RegisterFieldExt {
     fn shift_expr(&self) -> &syn::LitInt;
     fn mask_expr(&self) -> syn::LitInt;
+    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T) -> proc_macro2::TokenStream;
 }
 
 impl RegisterFieldExt for RegisterField {
@@ -44,6 +46,13 @@ impl RegisterFieldExt for RegisterField {
         let span = self.offset.span();
         let value = (1 << self.offset.bit_size() as u64) - 1;
         syn::LitInt::new(value, IntSuffix::None, span)
+    }
+
+    #[cfg(not(feature = "x86_64_bmi1_optimization"))]
+    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T) -> proc_macro2::TokenStream {
+        let shift = self.shift_expr();
+        let mask = self.mask_expr();
+        quote!((#value_expr >> #shift) & #mask)
     }
 }
 
@@ -232,7 +241,7 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         let field_ty = field_ty.as_ref();
         let shift = field.shift_expr();
         let mask = field.mask_expr();
-        let primitive_expr = quote!((self.value >> #shift) & #mask);
+        let primitive_expr = field.primitive_extract_expr(&quote!(self.value));
         let value = if field.offset.bit_size() == 1 {
             quote!(#primitive_expr != 0x0)
         } else if enum_register_idents.get(&field.ident).is_none() {
@@ -289,15 +298,17 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         let field_ty = field_ty.as_ref();
         let shift = field.shift_expr();
         let mask = field.mask_expr();
-        let unpacked_ty = &register.ty;
-        Some(quote! {
+        let register_ty = &register.ty;
+        let ret = quote! {
             #[inline(always)]
             pub fn #setter_ident<'b>(&'b mut self, new_value: #field_ty) -> &'b mut Self {
-                self.value = (self.value & !(#mask << #shift)) | ((new_value as #unpacked_ty) & #mask) << #shift;
-                self.mask |= #mask << #shift;
+                let context_mask: #register_ty = #mask << #shift;
+                self.value = (self.value & !context_mask) | (((new_value as #register_ty) & #mask) << #shift);
+                self.mask |= context_mask;
                 self
             }
-        })
+        };
+        Some(ret)
     });
     let get_definition = {
         quote! {
@@ -320,11 +331,11 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         }
     };
     let update_definition = {
-        let mut clear: u32 = 0;
+        let mut clear: u64 = 0;
         for field in register.fields.iter() {
             if field.properties.as_ref().and_then(|p| p.properties.iter().map(|p| p.value).find(|&value| value == RegisterPropertyValue::SetToClear)).is_some() {
-                let mask = field.mask_expr().value() as u32;
-                clear |= mask;
+                let mask = field.mask_expr().value();
+                clear |= mask << field.shift_expr().value();
             }
         }
         let initial_value = if register.is_write_only() {
@@ -367,15 +378,19 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
                     }
                 }
 
+                const fn clear_mask() -> #register_ty {
+                    #clear as #register_ty
+                }
+
                 #( #update_function_definitions )*
             }
 
             impl<'a> Drop for #update_ident<'a> {
                 #[inline(always)]
                 fn drop(&mut self) {
-                    let clear_mask = #clear as #register_ty;
+                    let clear_mask = Self::clear_mask();
                     if self.mask != 0 {
-                        let v: #register_ty = #initial_value & ! clear_mask & ! self.mask;
+                        let v: #register_ty = #initial_value & (!clear_mask) & (!self.mask);
                         self.reg.value.set(self.value | v);
                     }
                 }

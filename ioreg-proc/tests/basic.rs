@@ -8,19 +8,47 @@ unsafe fn get_value_u32<'a, T>(v: &'a T, offset: usize) -> u32 {
 }
 
 #[test]
+#[no_mangle]
 fn round_trip_simple_field_values_1() {
-    let test: BASIC_TEST::BASIC_TEST = unsafe { mem::zeroed() };
+    let test: basic_test::BasicTest = unsafe { mem::zeroed() };
     assert_eq!(test.reg1.get().field1(), false);
     test.reg1.update().set_field1(true);
     assert_eq!(test.reg1.get().field1(), true);
     assert_eq!(unsafe { get_value_u32(&test, 0) }, 0x1);
     assert_eq!(unsafe { get_value_u32(&test, 1) }, 0x0);
+
+    test.reg1.update().set_field2(0b10);
+    assert_eq!(test.reg1.get().field2(), 0b10);
+    assert_eq!(unsafe { get_value_u32(&test, 0) }, 0b101);
+}
+
+#[test]
+fn round_trip_simple_field_values_2() {
+    let test: basic_test::BasicTest = unsafe { mem::zeroed() };
+    assert_eq!(test.reg2.get().field1(), false);
+    assert_eq!(unsafe { get_value_u32(&test.reg2, 0) }, 0b0);
+    test.reg2.update().set_field1(true);
+    assert_eq!(test.reg2.get().field1(), true);
+    assert_eq!(unsafe { get_value_u32(&test.reg2, 0) }, 0b1);
+}
+
+#[test]
+fn reg32_size_match() {
+    assert_eq!(mem::size_of::<basic_test::WoReg>(), mem::size_of::<u32>());
+}
+
+#[test]
+fn reg32_layout_match() {
+    let test: basic_test::BasicTest = unsafe { mem::zeroed() };
+    let base = (&test as *const basic_test::BasicTest) as usize;
+    let reg_base = (&test.wo_reg as *const basic_test::WoReg) as usize;
+    assert_eq!(reg_base - base, 0x8);
 }
 
 #[test]
 fn round_trip_variant_field_values() {
-    let test: VARIANT_TEST::VARIANT_TEST = unsafe { mem::zeroed() };
-    use VARIANT_TEST::cr::Parity;
+    let test: variant_test::VariantTest = unsafe { mem::zeroed() };
+    use variant_test::cr::Parity;
     assert_eq!(test.cr.get().parity(), Parity::NoParity);
     test.cr.update().set_parity(Parity::OddParity);
     assert_eq!(test.cr.get().parity(), Parity::OddParity);
@@ -32,11 +60,11 @@ fn round_trip_variant_field_values() {
 #[test]
 #[no_mangle]
 fn write_only_register_write() {
-    let test: BASIC_TEST::BASIC_TEST = unsafe { mem::zeroed() };
+    let test: basic_test::BasicTest = unsafe { mem::zeroed() };
     test.wo_reg.update()
         .set_field2(0x1);
     println!("actual value: 0x{:x}", unsafe { get_value_u32(&test, 0x8) });
-    assert_eq!(unsafe { get_value_u32(&test, 0x8) }, 0b00000000000000000000000000000001);
+    assert_ne!(unsafe { get_value_u32(&test, 0x8) }, 0x0);
     test.wo_reg.update()
         .set_field1(0x1);
     assert_eq!(unsafe { get_value_u32(&test, 0x8) }, 0x1 << 16);

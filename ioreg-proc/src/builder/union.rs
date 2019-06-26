@@ -2,13 +2,16 @@ use crate::{IoRegs, RegisterOrGroup, Register};
 use std::collections::LinkedList;
 use quote::quote;
 use super::RegisterExt;
+use super::casing::ToCasing;
 
 pub(crate) fn build_union(union: &IoRegs) -> syn::Result<proc_macro2::TokenStream> {
-    let union_ident = &union.name;
+    let union_ident = union.name.to_camel_case();
+    let mod_ident = union.name.to_snake_case();
     let mut field_definitions = LinkedList::new();
     let mut register_definitions = LinkedList::new();
     let mut offset: usize = 0;
     let mut padding_count: usize = 0;
+    println!("build_union: {}::{}", mod_ident, union_ident);
     for reg_or_group in union.registers.iter() {
         match reg_or_group {
             &RegisterOrGroup::Single(ref reg) => {
@@ -37,7 +40,7 @@ pub(crate) fn build_union(union: &IoRegs) -> syn::Result<proc_macro2::TokenStrea
         }
     }
     Ok(quote! {
-        pub mod #union_ident {
+        pub mod #mod_ident {
             #( #register_definitions )*
             pub struct #union_ident {
                 #( #field_definitions ),*

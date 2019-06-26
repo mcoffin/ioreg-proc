@@ -162,10 +162,19 @@ impl Parse for Register {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct LitIntRange {
     pub(crate) start: syn::LitInt,
     pub(crate) range_sep: Token![..],
     pub(crate) end: syn::LitInt,
+}
+
+impl ToTokens for LitIntRange {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.start.to_tokens(tokens);
+        self.range_sep.to_tokens(tokens);
+        self.end.to_tokens(tokens);
+    }
 }
 
 impl LitIntRange {
@@ -189,9 +198,20 @@ impl Parse for LitIntRange {
     }
 }
 
+#[derive(Clone)]
 enum RegisterFieldOffset {
     Bit(syn::LitInt),
     BitRange(LitIntRange),
+}
+
+impl ToTokens for RegisterFieldOffset {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        use RegisterFieldOffset::*;
+        match self {
+            Bit(ref v) => v.to_tokens(tokens),
+            BitRange(ref range) => range.to_tokens(tokens),
+        }
+    }
 }
 
 impl RegisterFieldOffset {
