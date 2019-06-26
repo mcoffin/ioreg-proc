@@ -44,6 +44,7 @@ fn reg32_layout_match() {
 }
 
 #[test]
+#[no_mangle]
 fn round_trip_variant_field_values() {
     let test: variant_test::VariantTest = unsafe { mem::zeroed() };
     use variant_test::cr::Parity;

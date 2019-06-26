@@ -32,6 +32,7 @@ trait RegisterFieldExt {
     fn shift_expr(&self) -> &syn::LitInt;
     fn mask_expr(&self) -> syn::LitInt;
     fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream;
+    fn max_value(&self) -> u64;
 }
 
 impl RegisterFieldExt for RegisterField {
@@ -47,6 +48,24 @@ impl RegisterFieldExt for RegisterField {
         let span = self.offset.span();
         let value = (1 << self.offset.bit_size() as u64) - 1;
         syn::LitInt::new(value, IntSuffix::None, span)
+    }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    fn max_value(&self) -> u64 {
+        let bits = self.offset.bit_size();
+        if bits > 64 {
+            panic!();
+        }
+        unsafe { core::arch::x86_64::_bzhi_u64(core::u64::MAX, bits as u32) }
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    fn max_value(&self) -> u64 {
+        let bits = self.offset.bit_size();
+        if bits > 64 {
+            panic!();
+        }
+        (0b1 << bits) - 1
     }
 
     #[cfg(not(feature = "x86_64_bmi1_optimization"))]
@@ -301,16 +320,21 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         } else if enum_register_idents.get(&field.ident).is_none() {
             primitive_expr
         } else {
-            #[cfg(ioregs_variant_unchecked)]
-            {
+            if field.variants.as_ref().map(|v| &v.variants).unwrap().iter().count() as u64 == field.max_value() {
+                // All paths are covered, so we're good to transmute
                 quote!(unsafe { core::mem::transmute::<_, #field_ty>(#primitive_expr) })
-            }
-            #[cfg(not(ioregs_variant_unchecked))]
-            {
-                quote! {
-                    use core::convert::TryFrom;
-                    let primitive_value: #register_ty = #primitive_expr;
-                    #field_ty::try_from(primitive_value).unwrap()
+            } else {
+                #[cfg(feature = "unsafe_variant_unchecked")]
+                {
+                    quote!(unsafe { core::mem::transmute::<_, #field_ty>(#primitive_expr) })
+                }
+                #[cfg(not(feature = "unsafe_variant_unchecked"))]
+                {
+                    quote! {
+                        use core::convert::TryFrom;
+                        let primitive_value: #register_ty = #primitive_expr;
+                        #field_ty::try_from(primitive_value).unwrap()
+                    }
                 }
             }
         };
