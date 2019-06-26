@@ -321,9 +321,11 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             primitive_expr
         } else {
             if field.variants.as_ref().map(|v| &v.variants).unwrap().iter().count() as u64 == field.max_value() {
+                println!("emitting optimized enum code");
                 // All paths are covered, so we're good to transmute
                 quote!(unsafe { core::mem::transmute::<_, #field_ty>(#primitive_expr) })
             } else {
+                println!("emitting un-optimized enum code (max_value = {}, bit_size = {})", field.max_value(), field.offset.bit_size());
                 #[cfg(feature = "unsafe_variant_unchecked")]
                 {
                     quote!(unsafe { core::mem::transmute::<_, #field_ty>(#primitive_expr) })
