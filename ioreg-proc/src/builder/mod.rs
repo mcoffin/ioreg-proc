@@ -2,6 +2,7 @@ use super::{IoRegs, Register, RegisterType, RegisterField, RegisterFieldOffset, 
 use quote::{ ToTokens, quote };
 use std::borrow::Cow;
 use std::collections::{LinkedList, HashMap};
+use std::iter;
 
 pub mod union;
 
@@ -82,24 +83,46 @@ fn camel_case_cow<'a, T: ?Sized>(input: Cow<'a, T>) -> Cow<'a, T> where
     Cow::Owned(input.to_camel_case())
 }
 
-fn build_register_field_enum(field: &RegisterField) -> syn::Result<Option<(syn::Ident, syn::export::TokenStream2)>> {
+fn build_register_field_enum(field: &RegisterField, register_ty: Option<RegisterType>) -> syn::Result<Option<(syn::Ident, syn::export::TokenStream2)>> {
     if let Some(variants) = field.variants.as_ref() {
         let enum_ident = {
             let mut enum_ident = field.ident.to_string().into();
             enum_ident = camel_case_cow(enum_ident);
             syn::Ident::new(enum_ident.as_ref(), field.ident.span())
         };
-        let primitive = register_field_primitive(field)?;
-        let variant_idents = variants.variants.iter()
-            .map(|v| &v.ident);
-        let variant_values = variants.variants.iter()
-            .map(|v| &v.value);
+        let default_primitive = register_field_primitive(field)?;
+        let primitive = register_ty
+            .map(ToTokens::into_token_stream)
+            .unwrap_or(default_primitive);
+        let get_variant_idents = || variants.variants.iter().map(|v| &v.ident);
+        let variant_idents = get_variant_idents();
+        let variant_idents2 = get_variant_idents();
+        let get_variant_values = || variants.variants.iter().map(|v| &v.value);
+        let variant_values = get_variant_values();
+        let variant_values2 = get_variant_values();
         let enum_ident_ref = &enum_ident;
+        let enum_ident_rep = iter::repeat(enum_ident_ref);
+        #[cfg(test)]
+        let derive_expr = quote!(#[derive(Debug, Clone, Copy, PartialEq, Eq)]);
+        #[cfg(not(test))]
+        let derive_expr = quote!(#[derive(Clone, Copy, PartialEq, Eq)]);
         let definition = quote! {
-            #[derive(Clone, Copy, PartialEq, Eq)]
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             #[repr(#primitive)]
             pub enum #enum_ident_ref {
                 #( #variant_idents = #variant_values ),*
+            }
+
+            impl core::convert::TryFrom<#primitive> for #enum_ident_ref {
+                type Error = #primitive;
+
+                #[inline(always)]
+                fn try_from(primitive: #primitive) -> Result<Self, Self::Error> {
+                    match primitive {
+                        #( #variant_values2 => Ok(#enum_ident_rep::#variant_idents2), )*
+                        v => Err(v),
+                    }
+                }
             }
         };
         Ok(Some((enum_ident, definition)))
@@ -139,7 +162,7 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
     let mut enum_register_definitions = LinkedList::new();
     let mut enum_register_idents = HashMap::new();
     for field in register.fields.iter() {
-        if let Some((enum_ident, ts)) = build_register_field_enum(field)? {
+        if let Some((enum_ident, ts)) = build_register_field_enum(field, Some(register.ty))? {
             let mod_ident = &mod_ident;
             let enum_path: syn::Path = syn::parse2(quote!(#mod_ident::#enum_ident))?;
             enum_register_idents.insert(field.ident.clone(), enum_path);
@@ -190,15 +213,20 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             let s = <str as SnakeCase>::to_snake_case(field.ident.to_string().as_ref());
             syn::Ident::new(&s, field.ident.span())
         };
-        let mut is_enum = false;
+        let mut is_enum = true;
         let field_ty: Cow<syn::Path> = enum_register_idents.get(&field.ident)
             .map(Cow::Borrowed)
             .map(Ok)
             .unwrap_or_else(|| {
-                is_enum = true;
-                register_field_primitive(&field)
-                    .and_then(syn::parse2)
-                    .map(Cow::Owned)
+                is_enum = false;
+                if field.offset.bit_size() == 1 {
+                    register_field_primitive(&field)
+                        .and_then(syn::parse2)
+                        .map(Cow::Owned)
+                } else {
+                    syn::parse2(register_ty.into_token_stream())
+                        .map(Cow::Owned)
+                }
             })
             .unwrap(); // TODO: get rid of this unwrap
         let field_ty = field_ty.as_ref();
@@ -207,8 +235,21 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         let primitive_expr = quote!((self.value >> #shift) & #mask);
         let value = if field.offset.bit_size() == 1 {
             quote!(#primitive_expr != 0x0)
+        } else if enum_register_idents.get(&field.ident).is_none() {
+            primitive_expr
         } else {
-            quote!(unimplemented!())
+            #[cfg(ioregs_variant_unchecked)]
+            {
+                quote!(unsafe { core::mem::transmute::<_, #field_ty>(#primitive_expr) })
+            }
+            #[cfg(not(ioregs_variant_unchecked))]
+            {
+                quote! {
+                    use core::convert::TryFrom;
+                    let primitive_value: #register_ty = #primitive_expr;
+                    #field_ty::try_from(primitive_value).unwrap()
+                }
+            }
         };
         Some(quote! {
             #[inline(always)]

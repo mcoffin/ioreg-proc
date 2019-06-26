@@ -17,6 +17,31 @@ fn round_trip_simple_field_values_1() {
     assert_eq!(unsafe { get_value_u32(&test, 1) }, 0x0);
 }
 
+#[test]
+fn round_trip_variant_field_values() {
+    let test: VARIANT_TEST::VARIANT_TEST = unsafe { mem::zeroed() };
+    use VARIANT_TEST::cr::Parity;
+    assert_eq!(test.cr.get().parity(), Parity::NoParity);
+    test.cr.update().set_parity(Parity::OddParity);
+    assert_eq!(test.cr.get().parity(), Parity::OddParity);
+    test.cr.update().set_parity(Parity::EvenParity);
+    assert_eq!(test.cr.get().parity(), Parity::EvenParity);
+    assert_eq!(unsafe { get_value_u32(&test, 0) }, (0x2 << 14));
+}
+
+#[test]
+#[no_mangle]
+fn write_only_register_write() {
+    let test: BASIC_TEST::BASIC_TEST = unsafe { mem::zeroed() };
+    test.wo_reg.update()
+        .set_field2(0x1);
+    println!("actual value: 0x{:x}", unsafe { get_value_u32(&test, 0x8) });
+    assert_eq!(unsafe { get_value_u32(&test, 0x8) }, 0b00000000000000000000000000000001);
+    test.wo_reg.update()
+        .set_field1(0x1);
+    assert_eq!(unsafe { get_value_u32(&test, 0x8) }, 0x1 << 16);
+}
+
 ioreg_proc::ioregs!(BASIC_TEST @ 0x0 = {
     0x0 => reg32 reg1 {
         0      => field1,
