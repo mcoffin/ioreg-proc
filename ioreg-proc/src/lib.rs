@@ -119,7 +119,7 @@ pub(crate) struct RegisterGroup {
     pub(crate) bracket_token: token::Bracket,
     pub(crate) count: syn::LitInt,
     pub(crate) brace_token: token::Brace,
-    pub(crate) fields: Punctuated<Register, Token![,]>,
+    pub(crate) members: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
 impl Parse for RegisterGroup {
@@ -134,7 +134,7 @@ impl Parse for RegisterGroup {
             bracket_token: bracketed!(bracket_content in input),
             count: bracket_content.parse()?,
             brace_token: braced!(brace_content in input),
-            fields: brace_content.parse_terminated(Register::parse)?,
+            members: brace_content.parse_terminated(RegisterOrGroup::parse)?,
         })
     }
 }

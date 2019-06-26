@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::{LinkedList, HashMap};
 use std::iter;
 
+pub mod alignment;
 pub mod union;
 pub mod casing;
 

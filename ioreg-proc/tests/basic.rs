@@ -117,13 +117,13 @@ ioreg_proc::ioregs!(VARIANT_TEST @ 0x0 = {
     }
 });
 
-// ioreg_proc::ioregs!(GROUP_TEST @ 0 = {
-//     0x0 => group regs[5] {
-//         0x0 => reg32 reg1 {
-//             0..31 => field1
-//         },
-//         0x4 => reg32 reg2 {
-//             0..31 => field2
-//         }
-//     }
-// });
+ioreg_proc::ioregs!(GROUP_TEST @ 0 = {
+    0x0 => group regs[5] {
+        0x0 => reg32 reg1 {
+            0..31 => field1
+        },
+        0x4 => reg32 reg2 {
+            0..31 => field2
+        }
+    }
+});
