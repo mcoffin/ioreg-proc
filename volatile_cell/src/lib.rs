@@ -15,7 +15,6 @@
 
 //! A cell that with volatile setter and getter.
 
-#![feature(core_intrinsics)]
 #![no_std]
 
 
@@ -31,8 +30,8 @@
 #[cfg(feature="replayer")] use core::clone::Clone;
 #[cfg(feature="replayer")] use core::cell::RefCell;
 
-#[cfg(not(feature="replayer"))] use core::intrinsics::{volatile_load, volatile_store};
-#[cfg(feature="replayer")] use core::intrinsics::transmute;
+#[cfg(not(feature="replayer"))] use core::ptr::{read_volatile as volatile_load, write_volatile as volatile_store};
+#[cfg(feature="replayer")] use core::mem::transmute;
 
 // TODO(farcaller): why this needs copy/clone?
 /// This structure is used to represent a hardware register.
