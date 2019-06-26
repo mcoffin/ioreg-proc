@@ -62,12 +62,11 @@ fn round_trip_variant_field_values() {
 fn write_only_register_write() {
     let test: basic_test::BasicTest = unsafe { mem::zeroed() };
     test.wo_reg.update()
-        .set_field2(0x1);
-    println!("actual value: 0x{:x}", unsafe { get_value_u32(&test, 0x8) });
-    assert_ne!(unsafe { get_value_u32(&test, 0x8) }, 0x0);
-    test.wo_reg.update()
         .set_field1(0x1);
-    assert_eq!(unsafe { get_value_u32(&test, 0x8) }, 0x1 << 16);
+    assert_eq!(unsafe { get_value_u32(&test.wo_reg, 0x0) }, 0x1);
+    test.wo_reg.update()
+        .set_field2(0x1);
+    assert_eq!(unsafe { get_value_u32(&test.wo_reg, 0x0) }, 0x1 << 16);
 }
 
 ioreg_proc::ioregs!(BASIC_TEST @ 0x0 = {
