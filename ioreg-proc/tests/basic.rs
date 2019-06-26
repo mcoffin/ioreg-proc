@@ -1,5 +1,3 @@
-use volatile_cell::VolatileCell;
-
 use std::mem;
 
 unsafe fn get_value_u32<'a, T>(v: &'a T, offset: usize) -> u32 {

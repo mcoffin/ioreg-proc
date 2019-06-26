@@ -31,7 +31,7 @@ impl RegisterExt for Register {
 trait RegisterFieldExt {
     fn shift_expr(&self) -> &syn::LitInt;
     fn mask_expr(&self) -> syn::LitInt;
-    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T) -> proc_macro2::TokenStream;
+    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream;
 }
 
 impl RegisterFieldExt for RegisterField {
@@ -50,10 +50,60 @@ impl RegisterFieldExt for RegisterField {
     }
 
     #[cfg(not(feature = "x86_64_bmi1_optimization"))]
-    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T) -> proc_macro2::TokenStream {
+    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, _ty: RegisterType) -> proc_macro2::TokenStream {
         let shift = self.shift_expr();
         let mask = self.mask_expr();
         quote!((#value_expr >> #shift) & #mask)
+    }
+
+    #[cfg(feature = "x86_64_bmi1_optimization")]
+    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream {
+        let shift = self.shift_expr();
+        let mask = self.mask_expr();
+        let default_implementation = quote!((#value_expr >> #shift) & #mask);
+        match ty {
+            RegisterType::Reg32 => {
+                let start = self.shift_expr();
+                let len = syn::LitInt::new(self.offset.bit_size(), syn::IntSuffix::None, self.offset.span());
+                quote! {
+                    {
+                        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                        {
+                            #[cfg(target_feature = "bmi1")]
+                            unsafe {
+                                #[cfg(target_arch = "x86")]
+                                use core::arch::x86::_bextr2_u32;
+                                #[cfg(target_arch = "x86_64")]
+                                use core::arch::x86_64::_bextr2_u32;
+
+                                _bextr2_u32(#value_expr, Self::bextr_control32(#start, #len))
+                            }
+                            #[cfg(not(target_feature = "bmi1"))]
+                            { #default_implementation }
+                        }
+                        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+                        { #default_implementation }
+                    }
+                }
+            },
+            RegisterType::Reg64 => {
+                let start = self.shift_expr();
+                let len = syn::LitInt::new(self.offset.bit_size(), syn::IntSuffix::None, self.offset.span());
+                quote! {
+                    {
+                        #[cfg(and(target_feature = "bmi1", not(target_arch = "x86")))]
+                        unsafe { core::arch::x86_64::_bextr2_u64(#value_expr, Self::bextr_control64(#start, #len)) }
+                        #[cfg(not(and(target_feature = "bmi1", not(target_arch = "x86"))))]
+                        { #default_implementation }
+                    }
+                }
+            },
+            _ => {
+                let shift = self.shift_expr();
+                let mask = self.mask_expr();
+                quote!((#value_expr >> #shift) & #mask)
+            },
+        }
     }
 }
 
@@ -242,9 +292,12 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         let field_ty = field_ty.as_ref();
         let shift = field.shift_expr();
         let mask = field.mask_expr();
-        let primitive_expr = field.primitive_extract_expr(&quote!(self.value));
+        let primitive_expr = field.primitive_extract_expr(&quote!(self.value), register.ty);
         let value = if field.offset.bit_size() == 1 {
-            quote!(#primitive_expr != 0x0)
+            quote! {
+                let val = #primitive_expr;
+                val != 0x0
+            }
         } else if enum_register_idents.get(&field.ident).is_none() {
             primitive_expr
         } else {
@@ -261,12 +314,13 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
                 }
             }
         };
-        Some(quote! {
+        let ret = quote! {
             #[inline(always)]
             pub fn #getter_ident(&self) -> #field_ty {
                 #value
             }
-        })
+        };
+        Some(ret)
     });
     let update_function_definitions = register.fields.iter().filter_map(|field| {
         use std::borrow::Borrow;
@@ -311,6 +365,16 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         };
         Some(ret)
     });
+    #[cfg(feature = "x86_64_bmi1_optimization")]
+    let get_function_definitions = get_function_definitions.chain(iter::once(quote! {
+        const fn bextr_control32(start: u32, len: u32) -> u32 {
+            (start & 0xff) | ((len & 0xff) << 8)
+        }
+
+        const fn bextr_control64(start: u64, len: u64) -> u64 {
+            (start & 0xff) | ((len & 0xff) << 8)
+        }
+    }));
     let get_definition = {
         quote! {
             #[derive(Clone)]

@@ -20,6 +20,6 @@ features = [ "full" ]
 path = "../volatile_cell"
 
 [features]
-default = []
+default = ["x86_64_bmi1_optimization"]
 alignment_tests = []
 x86_64_bmi1_optimization = []
