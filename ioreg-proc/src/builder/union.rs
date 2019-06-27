@@ -1,4 +1,4 @@
-use crate::{IoRegs, RegisterOrGroup, Register, RegisterGroup};
+use crate::{IoRegs, RegisterOrGroup, Register, RegisterGroup, LitVecSize};
 use std::collections::LinkedList;
 use quote::{quote, ToTokens};
 use super::RegisterExt;
@@ -63,9 +63,11 @@ impl UnionBuilder {
         let group_ty = builder.ty_path();
         let group_ty = &group_ty;
         let group_ident = &group_ident;
+        let field_ty = repeated_type(group_ty.clone().into_token_stream(), group.count.clone());
         let field_definition = quote! {
-            pub #group_ident: #group_ty
+            pub #group_ident: #field_ty
         };
+        self.offset += group.byte_length() as usize;
         #[cfg(feature = "alignment_tests")]
         {
             let test_ident = syn::Ident::new(&format!("test_align_{}_{}", &self.mod_ident, &group_ident), group_ident.span());
@@ -105,13 +107,14 @@ impl UnionBuilder {
 
     fn add_register(&mut self, reg: &Register) -> syn::Result<&mut Self> {
         self.advance_to_offset(reg.byte_start() as usize, || reg.offset.span());
-        self.offset += reg.ty.byte_length() as usize;
         let (idents, struct_definition) = super::build_register_struct(reg)?;
         let reg_ident = &reg.ident;
         let reg_ty = &idents.base;
+        let field_ty = repeated_type(reg_ty.clone().into_token_stream(), reg.count.clone());
         let field_definition = quote! {
-            pub #reg_ident: #reg_ty
+            pub #reg_ident: #field_ty
         };
+        self.offset += reg.byte_length() as usize;
         #[cfg(feature = "alignment_tests")]
         {
             let test_ident = syn::Ident::new(&format!("test_align_{}_{}", &self.mod_ident, reg_ident), reg_ident.span());
@@ -147,6 +150,16 @@ impl ToTokens for UnionBuilder {
                 #( #tests )*
             }
         });
+    }
+}
+
+fn repeated_type(ty: proc_macro2::TokenStream, count: Option<LitVecSize>) -> proc_macro2::TokenStream {
+    match count {
+        Some(size) => {
+            let len = &size.count;
+            quote!([#ty; #len])
+        },
+        None => ty,
     }
 }
 

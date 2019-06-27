@@ -8,13 +8,16 @@ extern crate proc_macro2;
 extern crate heck;
 
 mod builder;
+pub(crate) mod util;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, braced, bracketed, parenthesized, token, Token};
+use syn::{parse_macro_input, braced, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use std::iter;
 use quote::{ToTokens, quote};
+use util::ParseOptional;
+pub(crate) use util::LitVecSize;
 
 fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
     let value = value.as_ref();
@@ -100,6 +103,16 @@ pub(crate) enum RegisterOrGroup {
     Group(RegisterGroup),
 }
 
+impl RegisterOrGroup {
+    #[inline]
+    pub(crate) fn byte_length(&self) -> u64 {
+        match self {
+            &RegisterOrGroup::Single(ref reg) => reg.byte_length(),
+            &RegisterOrGroup::Group(ref group) => group.byte_length(),
+        }
+    }
+}
+
 impl Parse for RegisterOrGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // TODO: improve the error messages that this would generate to indicate all options
@@ -116,26 +129,41 @@ pub(crate) struct RegisterGroup {
     pub(crate) arrow_token: Token![=>],
     pub(crate) group_ident: syn::Ident,
     pub(crate) ident: syn::Ident,
-    pub(crate) bracket_token: token::Bracket,
-    pub(crate) count: syn::LitInt,
+    pub(crate) count: Option<LitVecSize>,
     pub(crate) brace_token: token::Brace,
     pub(crate) members: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
+impl RegisterGroup {
+    pub(crate) fn count_value(&self) -> u64 {
+        self.count
+            .as_ref()
+            .map(|c| c.value())
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn byte_length(&self) -> u64 {
+        let single_size: u64 = self.members
+            .iter()
+            .map(|m| m.byte_length())
+            .sum();
+        single_size * self.count_value()
+    }
+}
+
 impl Parse for RegisterGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let bracket_content;
         let brace_content;
-        Ok(RegisterGroup {
+        let ret = RegisterGroup {
             offset: input.parse()?,
             arrow_token: input.parse()?,
             group_ident: input.call(|s| parse_exact_ident(s, "group"))?,
             ident: input.parse()?,
-            bracket_token: bracketed!(bracket_content in input),
-            count: bracket_content.parse()?,
+            count: input.call(ParseOptional::parse_optional)?,
             brace_token: braced!(brace_content in input),
             members: brace_content.parse_terminated(RegisterOrGroup::parse)?,
-        })
+        };
+        Ok(ret)
     }
 }
 
@@ -144,8 +172,22 @@ struct Register {
     arrow_token: Token![=>],
     ty: RegisterType,
     ident: syn::Ident,
+    count: Option<LitVecSize>,
     brace_token: token::Brace,
     fields: Punctuated<RegisterField, Token![,]>,
+}
+
+impl Register {
+    pub(crate) fn count_value(&self) -> u64 {
+        self.count
+            .as_ref()
+            .map(|c| c.value())
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn byte_length(&self) -> u64 {
+        self.ty.byte_length() * self.count_value()
+    }
 }
 
 impl Parse for Register {
@@ -156,6 +198,7 @@ impl Parse for Register {
             arrow_token: input.parse()?,
             ty: input.parse()?,
             ident: input.parse()?,
+            count: input.call(ParseOptional::parse_optional)?,
             brace_token: braced!(content in input),
             fields: content.parse_terminated(RegisterField::parse)?,
         })
