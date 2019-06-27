@@ -1,5 +1,5 @@
 use syn::{bracketed, token};
-use syn::parse::ParseStream;
+use syn::parse::{ Parse, ParseStream };
 use quote::ToTokens;
 use proc_macro2::TokenStream;
 
@@ -9,13 +9,13 @@ pub trait ParseOptional: Sized {
 
 #[derive(Clone)]
 pub struct LitVecSize {
-    bracket_token: token::Bracket,
+    pub bracket_token: token::Bracket,
     pub count: syn::LitInt,
 }
 
 impl LitVecSize {
     #[inline]
-    fn value(&self) -> u64 {
+    pub fn value(&self) -> u64 {
         self.count.value()
     }
 }
@@ -35,9 +35,10 @@ impl ParseOptional for LitVecSize {
             return Ok(None);
         }
         let content;
-        Ok(Some(LitVecSize {
+        let ret = LitVecSize {
             bracket_token: bracketed!(content in input),
             count: content.parse()?,
-        }))
+        };
+        Ok(Some(ret))
     }
 }

@@ -103,6 +103,16 @@ pub(crate) enum RegisterOrGroup {
     Group(RegisterGroup),
 }
 
+impl RegisterOrGroup {
+    #[inline]
+    pub(crate) fn byte_length(&self) -> u64 {
+        match self {
+            &RegisterOrGroup::Single(ref reg) => reg.byte_length(),
+            &RegisterOrGroup::Group(ref group) => group.byte_length(),
+        }
+    }
+}
+
 impl Parse for RegisterOrGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // TODO: improve the error messages that this would generate to indicate all options
@@ -124,10 +134,27 @@ pub(crate) struct RegisterGroup {
     pub(crate) members: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
+impl RegisterGroup {
+    pub(crate) fn count_value(&self) -> u64 {
+        self.count
+            .as_ref()
+            .map(|c| c.value())
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn byte_length(&self) -> u64 {
+        let single_size: u64 = self.members
+            .iter()
+            .map(|m| m.byte_length())
+            .sum();
+        single_size * self.count_value()
+    }
+}
+
 impl Parse for RegisterGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let brace_content;
-        Ok(RegisterGroup {
+        let ret = RegisterGroup {
             offset: input.parse()?,
             arrow_token: input.parse()?,
             group_ident: input.call(|s| parse_exact_ident(s, "group"))?,
@@ -135,7 +162,8 @@ impl Parse for RegisterGroup {
             count: input.call(ParseOptional::parse_optional)?,
             brace_token: braced!(brace_content in input),
             members: brace_content.parse_terminated(RegisterOrGroup::parse)?,
-        })
+        };
+        Ok(ret)
     }
 }
 
@@ -147,6 +175,19 @@ struct Register {
     count: Option<LitVecSize>,
     brace_token: token::Brace,
     fields: Punctuated<RegisterField, Token![,]>,
+}
+
+impl Register {
+    pub(crate) fn count_value(&self) -> u64 {
+        self.count
+            .as_ref()
+            .map(|c| c.value())
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn byte_length(&self) -> u64 {
+        self.ty.byte_length() * self.count_value()
+    }
 }
 
 impl Parse for Register {

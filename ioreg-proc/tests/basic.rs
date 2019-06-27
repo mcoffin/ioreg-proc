@@ -68,6 +68,21 @@ fn write_only_register_write() {
     assert_eq!(unsafe { get_value_u32(&test.wo_reg, 0x0) }, 0x1 << 16);
 }
 
+#[test]
+fn set_groups_correctly() {
+    let test: group_test::GroupTest = unsafe { mem::zeroed() };
+    test.regs[0].reg1.update().set_field1(0xdeadbeef);
+    assert_eq!(test.regs[0].reg1.get().field1(), 0xdeadbeef);
+    assert_eq!(unsafe { get_value_u32(&test, 0) }, 0xdeadbeef);
+    for i in 1..10 {
+        assert_eq!(unsafe { get_value_u32(&test, i) }, 0);
+    }
+
+    test.regs[2].reg2.update().set_field2(0xfeedbeef);
+    assert_eq!(test.regs[2].reg2.get().field2(), 0xfeedbeef);
+    assert_eq!(unsafe { get_value_u32(&test, 5) }, 0xfeedbeef);
+}
+
 ioreg_proc::ioregs!(BASIC_TEST @ 0x0 = {
     0x0 => reg32 reg1 {
         0      => field1,
@@ -124,5 +139,8 @@ ioreg_proc::ioregs!(GROUP_TEST @ 0 = {
         0x4 => reg32 reg2 {
             0..31 => field2
         }
+    },
+    0x28 => reg32 reg3 {
+        0 => field1,
     }
 });
