@@ -8,13 +8,16 @@ extern crate proc_macro2;
 extern crate heck;
 
 mod builder;
+pub(crate) mod util;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, braced, bracketed, parenthesized, token, Token};
+use syn::{parse_macro_input, braced, parenthesized, token, Token};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use std::iter;
 use quote::{ToTokens, quote};
+use util::ParseOptional;
+pub(crate) use util::LitVecSize;
 
 fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
     let value = value.as_ref();
@@ -116,23 +119,20 @@ pub(crate) struct RegisterGroup {
     pub(crate) arrow_token: Token![=>],
     pub(crate) group_ident: syn::Ident,
     pub(crate) ident: syn::Ident,
-    pub(crate) bracket_token: token::Bracket,
-    pub(crate) count: syn::LitInt,
+    pub(crate) count: Option<LitVecSize>,
     pub(crate) brace_token: token::Brace,
     pub(crate) members: Punctuated<RegisterOrGroup, Token![,]>,
 }
 
 impl Parse for RegisterGroup {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let bracket_content;
         let brace_content;
         Ok(RegisterGroup {
             offset: input.parse()?,
             arrow_token: input.parse()?,
             group_ident: input.call(|s| parse_exact_ident(s, "group"))?,
             ident: input.parse()?,
-            bracket_token: bracketed!(bracket_content in input),
-            count: bracket_content.parse()?,
+            count: input.call(ParseOptional::parse_optional)?,
             brace_token: braced!(brace_content in input),
             members: brace_content.parse_terminated(RegisterOrGroup::parse)?,
         })
@@ -144,6 +144,7 @@ struct Register {
     arrow_token: Token![=>],
     ty: RegisterType,
     ident: syn::Ident,
+    count: Option<LitVecSize>,
     brace_token: token::Brace,
     fields: Punctuated<RegisterField, Token![,]>,
 }
@@ -156,6 +157,7 @@ impl Parse for Register {
             arrow_token: input.parse()?,
             ty: input.parse()?,
             ident: input.parse()?,
+            count: input.call(ParseOptional::parse_optional)?,
             brace_token: braced!(content in input),
             fields: content.parse_terminated(RegisterField::parse)?,
         })
