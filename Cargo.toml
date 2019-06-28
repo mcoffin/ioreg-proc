@@ -1,2 +1,2 @@
 [workspace]
-members = ["ioreg-proc", "volatile_cell"]
+members = ["ioreg-proc", "volatile_cell", "macro_zinc"]
