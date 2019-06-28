@@ -7,6 +7,20 @@ pub trait ParseOptional: Sized {
     fn parse_optional(input: ParseStream) -> syn::Result<Option<Self>>;
 }
 
+pub trait ParseStreamExt {
+    fn parse_optional<T>(self) -> syn::Result<Option<T>> where
+        T: ParseOptional;
+}
+
+impl<'a> ParseStreamExt for ParseStream<'a> {
+    #[inline]
+    fn parse_optional<T>(self) -> syn::Result<Option<T>> where
+        T: ParseOptional,
+    {
+        self.call(ParseOptional::parse_optional)
+    }
+}
+
 #[derive(Clone)]
 pub struct LitVecSize {
     pub bracket_token: token::Bracket,
