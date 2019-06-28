@@ -16,7 +16,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use std::iter;
 use quote::{ToTokens, quote};
-use util::ParseOptional;
+use util::{ ParseOptional, ParseStreamExt };
 pub(crate) use util::LitVecSize;
 
 fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result<syn::Ident> {
@@ -452,6 +452,7 @@ struct RegisterField {
     offset: RegisterFieldOffset,
     arrow_token: Token![=>],
     ident: syn::Ident,
+    count: Option<LitVecSize>,
     variants: Option<RegisterVariants>,
     properties: Option<RegisterProperties>,
 }
@@ -462,6 +463,7 @@ impl Parse for RegisterField {
             offset: input.parse()?,
             arrow_token: input.parse()?,
             ident: input.parse()?,
+            count: input.parse_optional()?,
             variants: input.call(parse_optional_register_variants)?,
             properties: input.call(parse_optional_register_properties)?,
         })
