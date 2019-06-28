@@ -29,30 +29,55 @@ impl RegisterExt for Register {
 }
 
 trait RegisterFieldExt {
-    fn shift_expr(&self) -> &syn::LitInt;
-    fn mask_expr(&self) -> syn::LitInt;
-    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream;
+    fn bit_size_full(&self) -> u64;
+    fn bit_size_single(&self) -> u64;
+    fn shift_expr(&self, index: u64) -> syn::LitInt;
+    fn mask_expr_full(&self) -> syn::LitInt;
+    fn mask_expr_single(&self) -> syn::LitInt;
+    fn primitive_extract_expr<T: ToTokens>(&self, index: Option<proc_macro2::TokenStream>, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream;
     fn max_value(&self) -> u64;
 }
 
 impl RegisterFieldExt for RegisterField {
-    fn shift_expr(&self) -> &syn::LitInt {
-        match &self.offset {
-            &RegisterFieldOffset::Bit(ref low) => low,
-            &RegisterFieldOffset::BitRange(ref range) => &range.start,
-        }
+    #[inline]
+    fn bit_size_full(&self) -> u64 {
+        self.offset.bit_size()
     }
 
-    fn mask_expr(&self) -> syn::LitInt {
+    fn bit_size_single(&self) -> u64 {
+        let count = self.count_value();
+        self.bit_size_full() / count
+    }
+
+    fn shift_expr(&self, index: u64) -> syn::LitInt {
+        use syn::IntSuffix;
+
+        let size = self.bit_size_single();
+        let base = match &self.offset {
+            &RegisterFieldOffset::Bit(ref low) => low,
+            &RegisterFieldOffset::BitRange(ref range) => &range.start,
+        };
+        let value = base.value() + (size * index);
+        syn::LitInt::new(value, IntSuffix::None, base.span())
+    }
+
+    fn mask_expr_full(&self) -> syn::LitInt {
         use syn::IntSuffix;
         let span = self.offset.span();
-        let value = (1 << self.offset.bit_size() as u64) - 1;
+        let value = (1 << self.bit_size_full() as u64) - 1;
+        syn::LitInt::new(value, IntSuffix::None, span)
+    }
+
+    fn mask_expr_single(&self) -> syn::LitInt {
+        use syn::IntSuffix;
+        let span = self.offset.span();
+        let value = self.max_value();
         syn::LitInt::new(value, IntSuffix::None, span)
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
     fn max_value(&self) -> u64 {
-        let bits = self.offset.bit_size();
+        let bits = self.bit_size_single();
         if bits > 64 {
             panic!();
         }
@@ -61,7 +86,7 @@ impl RegisterFieldExt for RegisterField {
 
     #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
     fn max_value(&self) -> u64 {
-        let bits = self.offset.bit_size();
+        let bits = self.bit_size_single();
         if bits > 64 {
             panic!();
         }
@@ -69,21 +94,36 @@ impl RegisterFieldExt for RegisterField {
     }
 
     #[cfg(not(feature = "x86_64_bmi1_optimization"))]
-    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, _ty: RegisterType) -> proc_macro2::TokenStream {
-        let shift = self.shift_expr();
-        let mask = self.mask_expr();
+    fn primitive_extract_expr<T: ToTokens>(&self, index: Option<proc_macro2::TokenStream>, value_expr: &T, _ty: RegisterType) -> proc_macro2::TokenStream {
+        let shift = if let Some(index) = index {
+            let base = self.shift_expr(0);
+            let size_expr = syn::LitInt::new(self.bit_size_single(), syn::IntSuffix::None, self.offset.span());
+            quote! {
+                (#base + (#size_expr * #index))
+            }
+        } else {
+            self.shift_expr(0).into_token_stream()
+        };
+        let mask = self.mask_expr_single();
         quote!((#value_expr >> #shift) & #mask)
     }
 
     #[cfg(feature = "x86_64_bmi1_optimization")]
-    fn primitive_extract_expr<T: ToTokens>(&self, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream {
-        let shift = self.shift_expr();
-        let mask = self.mask_expr();
-        let default_implementation = quote!((#value_expr >> #shift) & #mask);
+    fn primitive_extract_expr<T: ToTokens>(&self, index: Option<proc_macro2::TokenStream>, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream {
+        let start = if let Some(index) = index {
+            let base = self.shift_expr(0);
+            let size_expr = syn::LitInt::new(self.bit_size_single(), syn::IntSuffix::None, self.offset.span());
+            quote! {
+                (#base + (#size_expr * #index))
+            }
+        } else {
+            self.shift_expr(0).into_token_stream()
+        };
+        let mask = &self.mask_expr_single();
+        let default_implementation = quote!((#value_expr >> #start) & #mask);
         match ty {
             RegisterType::Reg32 => {
-                let start = self.shift_expr();
-                let len = syn::LitInt::new(self.offset.bit_size(), syn::IntSuffix::None, self.offset.span());
+                let len = syn::LitInt::new(self.bit_size_single(), syn::IntSuffix::None, self.offset.span());
                 quote! {
                     {
                         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -106,8 +146,7 @@ impl RegisterFieldExt for RegisterField {
                 }
             },
             RegisterType::Reg64 => {
-                let start = self.shift_expr();
-                let len = syn::LitInt::new(self.offset.bit_size(), syn::IntSuffix::None, self.offset.span());
+                let len = syn::LitInt::new(self.bit_size_single(), syn::IntSuffix::None, self.offset.span());
                 quote! {
                     {
                         #[cfg(and(target_feature = "bmi1", not(target_arch = "x86")))]
@@ -118,9 +157,7 @@ impl RegisterFieldExt for RegisterField {
                 }
             },
             _ => {
-                let shift = self.shift_expr();
-                let mask = self.mask_expr();
-                quote!((#value_expr >> #shift) & #mask)
+                quote!(#default_implementation)
             },
         }
     }
@@ -136,22 +173,13 @@ fn register_type(ty: RegisterType) -> impl ToTokens {
 }
 
 fn register_field_primitive(field: &RegisterField) -> syn::Result<syn::export::TokenStream2> {
-    match &field.offset {
-        &RegisterFieldOffset::Bit(..) => Ok(quote!(bool)),
-        &RegisterFieldOffset::BitRange(ref range) => {
-            let size = range.bit_size();
-            if size <= 8 {
-                Ok(quote!(u8))
-            } else if size <= 16 {
-                Ok(quote!(u16))
-            } else if size <= 32 {
-                Ok(quote!(u32))
-            } else if size <= 64 {
-                Ok(quote!(u64))
-            } else {
-                Err(syn::Error::new(range.span(), format!("Invalid register field size: {}", size)))
-            }
-        },
+    match field.bit_size_single() {
+        1 => Ok(quote!(bool)),
+        2...8 => Ok(quote!(u8)),
+        9...16 => Ok(quote!(u16)),
+        17...32 => Ok(quote!(u32)),
+        33...64 => Ok(quote!(u64)),
+        size => Err(syn::Error::new(field.offset.span(), format!("Invalid register field size: {}", size))),
     }
 }
 
@@ -298,7 +326,8 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             .map(Ok)
             .unwrap_or_else(|| {
                 is_enum = false;
-                if field.offset.bit_size() == 1 {
+                // Only override for booleans
+                if field.bit_size_single() == 1 {
                     register_field_primitive(&field)
                         .and_then(syn::parse2)
                         .map(Cow::Owned)
@@ -309,10 +338,13 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             })
             .unwrap(); // TODO: get rid of this unwrap
         let field_ty = field_ty.as_ref();
-        let shift = field.shift_expr();
-        let mask = field.mask_expr();
-        let primitive_expr = field.primitive_extract_expr(&quote!(self.value), register.ty);
-        let value = if field.offset.bit_size() == 1 {
+        let idx_expr = if field.count_value() > 1 {
+            Some(quote!(index))
+        } else {
+            None
+        };
+        let primitive_expr = field.primitive_extract_expr(idx_expr, &quote!(self.value), register.ty);
+        let value = if field.bit_size_single() == 1 {
             quote! {
                 let val = #primitive_expr;
                 val != 0x0
@@ -338,10 +370,19 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
                 }
             }
         };
-        let ret = quote! {
-            #[inline(always)]
-            pub fn #getter_ident(&self) -> #field_ty {
-                #value
+        let ret = if field.count_value() > 1 {
+            quote! {
+                #[inline(always)]
+                pub fn #getter_ident(&self, index: usize) -> #field_ty {
+                    #value
+                }
+            }
+        } else {
+            quote! {
+                #[inline(always)]
+                pub fn #getter_ident(&self) -> #field_ty {
+                    #value
+                }
             }
         };
         Some(ret)
@@ -375,16 +416,42 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             })
             .unwrap(); // TODO: get rid of this unwrap
         let field_ty = field_ty.as_ref();
-        let shift = field.shift_expr();
-        let mask = field.mask_expr();
+        let mask = field.mask_expr_single();
         let register_ty = &register.ty;
-        let ret = quote! {
-            #[inline(always)]
-            pub fn #setter_ident<'b>(&'b mut self, new_value: #field_ty) -> &'b mut Self {
-                let context_mask: #register_ty = #mask << #shift;
-                self.value = (self.value & !context_mask) | (((new_value as #register_ty) & #mask) << #shift);
-                self.mask |= context_mask;
-                self
+        let shift = field.shift_expr(0);
+        let ret = if field.count_value() > 1 {
+            use syn::IntSuffix;
+            use syn::spanned::Spanned;
+            let last_index_expr = syn::LitInt::new(field.count_value(), IntSuffix::None, field.count.as_ref().map(|c| c.span()).unwrap());
+            let single_size = syn::LitInt::new(field.bit_size_single(), IntSuffix::None, field.offset.span());
+            #[cfg(feature = "field_count_checks")]
+            let count_check = quote! {
+                if index > #last_index_expr {
+                    panic!();
+                }
+            };
+            #[cfg(not(feature = "field_count_checks"))]
+            let count_check = quote!();
+            quote! {
+                #[inline(always)]
+                pub fn #setter_ident<'b>(&'b mut self, index: usize, new_value: #field_ty) -> &'b mut Self {
+                    #count_check
+                    let update_offset = Self::update_offset(#shift, #single_size, index);
+                    let context_mask: #register_ty = #mask << update_offset;
+                    self.value = (self.value & !context_mask) | (((new_value as #register_ty) & #mask) << update_offset);
+                    self.mask |= context_mask;
+                    self
+                }
+            }
+        } else {
+            quote! {
+                #[inline(always)]
+                pub fn #setter_ident<'b>(&'b mut self, new_value: #field_ty) -> &'b mut Self {
+                    let context_mask: #register_ty = #mask << #shift;
+                    self.value = (self.value & !context_mask) | (((new_value as #register_ty) & #mask) << #shift);
+                    self.mask |= context_mask;
+                    self
+                }
             }
         };
         Some(ret)
@@ -423,8 +490,8 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
         let mut clear: u64 = 0;
         for field in register.fields.iter() {
             if field.properties.as_ref().and_then(|p| p.properties.iter().map(|p| p.value).find(|&value| value == RegisterPropertyValue::SetToClear)).is_some() {
-                let mask = field.mask_expr().value();
-                clear |= mask << field.shift_expr().value();
+                let mask = field.mask_expr_full().value();
+                clear |= mask << field.shift_expr(0).value();
             }
         }
         let initial_value = if register.is_write_only() {
@@ -469,6 +536,10 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
 
                 const fn clear_mask() -> #register_ty {
                     #clear as #register_ty
+                }
+
+                const fn update_offset(base: usize, size: usize, index: usize) -> usize {
+                    base + (size * index)
                 }
 
                 #( #update_function_definitions )*

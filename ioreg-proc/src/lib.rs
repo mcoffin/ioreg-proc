@@ -457,6 +457,15 @@ struct RegisterField {
     properties: Option<RegisterProperties>,
 }
 
+impl RegisterField {
+    pub(crate) fn count_value(&self) -> u64 {
+        self.count
+            .as_ref()
+            .map(|c| c.value())
+            .unwrap_or(1)
+    }
+}
+
 impl Parse for RegisterField {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         Ok(RegisterField {
