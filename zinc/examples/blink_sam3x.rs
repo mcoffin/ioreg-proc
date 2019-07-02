@@ -1,5 +1,6 @@
 #![feature(start, asm)]
 #![no_std]
+#![no_main]
 
 extern crate zinc;
 
@@ -15,28 +16,8 @@ const LED_CONF: GpioConf = GpioConf {
     direction: GpioDirection::Out,
 };
 
-fn wait(mut ticks: u32) {
-    systick::tick();
-    while ticks > 0 {
-        wait_for!(systick::tick());
-        ticks -= 1;
-    }
-}
-
-#[inline(never)]
-pub fn blink_main() {
-    let led = ::zinc::hal::sam3x::pin::Pin::from(LED_CONF);
-    led.set_low();
-    loop {
-        wait(WAIT_TIME);
-        led.set_high();
-        wait(WAIT_TIME);
-        led.set_low();
-    }
-}
-
-#[start]
-fn start(_: isize, _: *const *const u8) -> isize {
+#[no_mangle]
+fn main(_: isize, _: *const *const u8) -> isize {
     use zinc::hal::mem_init;
     unsafe { mem_init::init_stack() };
     mem_init::init_data();
@@ -56,7 +37,26 @@ fn start(_: isize, _: *const *const u8) -> isize {
     use zinc::hal::sam3x::watchdog;
     watchdog::disable();
 
-    blink_main();
+    let led = ::zinc::hal::sam3x::pin::Pin::from(LED_CONF);
+    real_main(&led)
+}
 
-    0
+#[inline(never)]
+fn wait(mut ticks: u32) {
+    systick::tick();
+    while ticks > 0 {
+        wait_for!(systick::tick());
+        ticks -= 1;
+    }
+}
+
+pub fn real_main<P: Gpio>(led: &P) -> isize {
+    led.set_low();
+    loop {
+        wait(WAIT_TIME);
+        led.set_high();
+        wait(WAIT_TIME);
+        led.set_low();
+    }
+    return 0;
 }
