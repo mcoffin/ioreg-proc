@@ -144,6 +144,7 @@ impl ToTokens for UnionBuilder {
         tokens.extend(quote! {
             pub mod #mod_ident {
                 #( #register_definitions )*
+                #[repr(C)]
                 pub struct #union_ident {
                     #( #field_definitions ),*
                 }

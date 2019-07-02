@@ -83,7 +83,7 @@ fn set_groups_correctly() {
     assert_eq!(unsafe { get_value_u32(&test, 5) }, 0xfeedbeef);
 }
 
-ioreg_proc::ioregs!(BASIC_TEST @ 0x0 = {
+ioreg_proc::ioregs!(BASIC_TEST = {
     0x0 => reg32 reg1 {
         0      => field1,
         1..3   => field2,

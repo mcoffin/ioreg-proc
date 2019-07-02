@@ -29,10 +29,27 @@ fn parse_exact_ident<S: AsRef<str>>(input: ParseStream, value: S) -> syn::Result
         })
 }
 
+struct IoRegsLocation {
+    location_token: Token![@],
+    location: syn::LitInt,
+}
+
+impl ParseOptional for IoRegsLocation {
+    fn parse_optional(input: ParseStream) -> syn::Result<Option<Self>> {
+        let has_at = input.peek(Token![@]);
+        if !has_at {
+            return Ok(None);
+        }
+        Ok(Some(IoRegsLocation {
+            location_token: input.parse()?,
+            location: input.parse()?,
+        }))
+    }
+}
+
 pub(crate) struct IoRegs {
     pub(crate) name: syn::Ident,
-    pub(crate) location_token: Token![@],
-    pub(crate) location: syn::LitInt,
+    pub(crate) location: Option<IoRegsLocation>,
     pub(crate) equals_token: Token![=],
     pub(crate) brace_token: token::Brace,
     pub(crate) registers: Punctuated<RegisterOrGroup, Token![,]>,
@@ -43,8 +60,7 @@ impl Parse for IoRegs {
         let content;
         Ok(IoRegs {
             name: input.parse()?,
-            location_token: input.parse()?,
-            location: input.parse()?,
+            location: input.parse_optional()?,
             equals_token: input.parse()?,
             brace_token: braced!(content in input),
             registers: content.parse_terminated(RegisterOrGroup::parse)?,
@@ -210,6 +226,7 @@ pub(crate) struct LitIntRange {
     pub(crate) start: syn::LitInt,
     pub(crate) range_sep: Token![..],
     pub(crate) end: syn::LitInt,
+    pub(crate) inverted: bool,
 }
 
 impl ToTokens for LitIntRange {
@@ -233,11 +250,18 @@ impl LitIntRange {
 
 impl Parse for LitIntRange {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(LitIntRange {
+        use std::mem;
+        let mut ret = LitIntRange {
             start: input.parse()?,
             range_sep: input.parse()?,
             end: input.parse()?,
-        })
+            inverted: false,
+        };
+        if ret.start.value() > ret.end.value() {
+            mem::swap(&mut ret.start, &mut ret.end);
+            ret.inverted = true;
+        }
+        Ok(ret)
     }
 }
 

@@ -1,0 +1,24 @@
+[package]
+name = "zinc"
+version = "0.1.0"
+authors = ["Zinc Developers <zinc@github.com>"]
+build = "build.rs"
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+cpu_cortex-m3 = []
+mcu_sam3x = ["cpu_cortex-m3"]
+
+[dependencies]
+rlibc = "*"
+
+[dependencies.ioreg-proc]
+path = "../ioreg-proc"
+
+[dependencies.volatile_cell]
+path = "../volatile_cell"
+
+[dev-dependencies.zinc-macro]
+path = "../zinc-macro"

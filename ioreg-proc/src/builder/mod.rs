@@ -36,6 +36,7 @@ trait RegisterFieldExt {
     fn mask_expr_single(&self) -> syn::LitInt;
     fn primitive_extract_expr<T: ToTokens>(&self, index: Option<proc_macro2::TokenStream>, value_expr: &T, ty: RegisterType) -> proc_macro2::TokenStream;
     fn max_value(&self) -> u64;
+    fn build_clear_fn(&self) -> proc_macro2::TokenStream;
 }
 
 impl RegisterFieldExt for RegisterField {
@@ -79,7 +80,7 @@ impl RegisterFieldExt for RegisterField {
     fn max_value(&self) -> u64 {
         let bits = self.bit_size_single();
         if bits > 64 {
-            panic!();
+            panic!("too many bits for {}: {}", &self.ident, bits);
         }
         unsafe { core::arch::x86_64::_bzhi_u64(core::u64::MAX, bits as u32) }
     }
@@ -88,7 +89,7 @@ impl RegisterFieldExt for RegisterField {
     fn max_value(&self) -> u64 {
         let bits = self.bit_size_single();
         if bits > 64 {
-            panic!();
+            panic!("too many bits for {}: {}", &self.ident, bits);
         }
         (0b1 << bits) - 1
     }
@@ -159,6 +160,37 @@ impl RegisterFieldExt for RegisterField {
             _ => {
                 quote!(#default_implementation)
             },
+        }
+    }
+
+    fn build_clear_fn(&self) -> proc_macro2::TokenStream {
+        let clear_ident = {
+            use heck::SnakeCase;
+            let s = <str as SnakeCase>::to_snake_case(self.ident.to_string().as_ref());
+            syn::Ident::new(&format!("clear_{}", s), self.ident.span())
+        };
+        let mask = self.mask_expr_single();
+        let shift = self.shift_expr(0);
+        if self.count_value() > 1 {
+            let len = syn::LitInt::new(self.bit_size_single(), syn::IntSuffix::None, self.offset.span());
+            quote! {
+                #[inline(always)]
+                pub fn #clear_ident<'b>(&'b mut self, index: usize) -> &'b mut Self {
+                    let shift = (#shift + (#len * index));
+                    self.value |= #mask << shift;
+                    self.mask |= #mask << shift;
+                    self
+                }
+            }
+        } else {
+            quote! {
+                #[inline(always)]
+                pub fn #clear_ident<'b>(&'b mut self) -> &'b mut Self {
+                    self.value |= #mask << #shift;
+                    self.mask |= #mask << #shift;
+                    self
+                }
+            }
         }
     }
 }
@@ -309,7 +341,7 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             .as_ref()
             .and_then(|props| {
                 use std::iter::Iterator;
-                props.properties.iter().find(|&p| p.value == RegisterPropertyValue::ReadOnly)
+                props.properties.iter().find(|&p| p.value == RegisterPropertyValue::WriteOnly)
             })
             .is_some();
         if is_write_only {
@@ -344,7 +376,7 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             None
         };
         let primitive_expr = field.primitive_extract_expr(idx_expr, &quote!(self.value), register.ty);
-        let value = if field.bit_size_single() == 1 {
+        let value = if field.bit_size_single() == 1 && field.variants.is_none() {
             quote! {
                 let val = #primitive_expr;
                 val != 0x0
@@ -398,6 +430,17 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
             .is_some();
         if is_read_only {
             return None;
+        }
+        let is_set_to_clear = field.properties
+            .as_ref()
+            .and_then(|props| {
+                use std::iter::Iterator;
+                props.properties.iter().find(|&p| p.value == RegisterPropertyValue::SetToClear)
+            })
+            .is_some();
+        if is_set_to_clear {
+            let clear_fn = field.build_clear_fn();
+            return Some(clear_fn);
         }
         let setter_ident = {
             use heck::SnakeCase;
