@@ -15,11 +15,13 @@ pub fn stack_base() -> u32 {
 }
 
 /// Returns the current stack limit
+#[inline(always)]
 pub unsafe fn stack_limit() -> u32 {
     __STACK_LIMIT
 }
 
 /// Sets the current stack limit
+#[inline(always)]
 pub unsafe fn set_stack_limit(val: u32) {
     __STACK_LIMIT = val;
 }

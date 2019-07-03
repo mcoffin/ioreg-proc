@@ -7,6 +7,8 @@ __exidx_end            = abort;
 
 __aeabi_memclr4 = __aeabi_memclr;
 
+PROVIDE(isr_systick = isr_hardfault);
+
 SECTIONS
 {
     .vector : ALIGN(4)
@@ -20,7 +22,6 @@ SECTIONS
     .text : ALIGN(4)
     {
         FILL(0xff)
-        *(.text.main);
 	*(.text*);
         *(.rodata .rodata.*)
     } > rom

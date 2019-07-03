@@ -24,5 +24,13 @@
   "target-endian": "little",
   "target-pointer-width": "32",
   "vendor": "",
-  "disable-redzone": true
+  "disable-redzone": true,
+  "pre-link-args": {
+      "ld.lld": [
+          "-Tlayout.ld"
+      ],
+      "gcc": [
+          "-Tlayout.ld"
+      ]
+  }
 }

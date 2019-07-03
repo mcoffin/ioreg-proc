@@ -15,18 +15,19 @@ dump_binary() {
 
 programming_upload() {
 	fw_file=${2-../target/firmware.bin}
-	stty -F "$1" raw ispeed 1200 ospeed 1200 cs8 -cstopb ignpar eol 255 eof 255
-	bash -c "printf \"\x00\" > \"$1\""
+	# stty -F "$1" raw ispeed 1200 ospeed 1200 cs8 -cstopb ignpar eol 255 eof 255
+	# bash -c "printf \"\x00\" > \"$1\""
 	sleep 1
-	bossac --write --verify --boot -R $fw_file
+	bossac -i -d --port=ttyACM0 -U true -e -w -v -b "$fw_file" -R
 }
 
-RUSTFLAGS="-C link-args=-Tlayout.ld" \
+RUSTFLAGS="-C target-cpu=cortex-m3" \
 	RUST_TARGET_PATH="$(pwd)/.." \
 	cargo xbuild \
 	--target=../thumbv7m-none-eabi-zinc.json \
 	--release \
 	--example "$example_name" \
-	--features mcu_sam3x
+	--features mcu_sam3x \
+	-v
 dump_binary $example_name
 programming_upload "$port"

@@ -1,5 +1,42 @@
 use ::wait_for;
 
+pub use self::reg::pmc::mor::Moscrcf as PmcMorMoscRCF;
+
+const DEFAULT_SYSTEM_CLOCK: u32 = 84_000_000;
+
+/// Initialize with our math, but should be like CMSIS
+pub fn init_default() -> u32 {
+    init_flash(DEFAULT_SYSTEM_CLOCK);
+
+    let pmc = unsafe { &reg::PMC };
+    let pll = Pll {
+        mul: 0xd,
+        div: 0x1,
+        count: 0x3f,
+    };
+    // Initialize main oscillator and Xtal oscillator
+    init_main_oscillator(0x8);
+
+    // Swap main clock source to newly-initialized xtal oscillator
+    pmc.mckr.update()
+        .set_css(self::reg::pmc::mckr::Css::MainClk);
+    wait_for!(pmc.st.get().mckrdy());
+
+    // Initialize PLLA
+    pmc.mckr.update()
+        .set_pres(self::reg::pmc::mckr::Pres::CLK_2)
+        .set_css(self::reg::pmc::mckr::Css::MainClk);
+    wait_for!(pmc.st.get().mckrdy());
+
+    // Switch to PLLA clock
+    pmc.mckr.update()
+        .set_pres(self::reg::pmc::mckr::Pres::CLK_2)
+        .set_css(self::reg::pmc::mckr::Css::PllaClk);
+    wait_for!(pmc.st.get().mckrdy());
+
+    DEFAULT_SYSTEM_CLOCK
+}
+
 #[derive(Clone, Copy)]
 #[allow(non_camel_case_types)]
 pub enum RCFreq {
@@ -8,6 +45,30 @@ pub enum RCFreq {
     MHz_12,
 }
 
+impl RCFreq {
+    /// Gets the frequency represented by this `RCFreq` in Hz
+    #[inline(always)]
+    fn freq(&self) -> u32 {
+        use self::RCFreq::*;
+        match self {
+            &MHz_4 => 4_000_000,
+            &MHz_8 => 8_000_000,
+            &MHz_12 => 12_000_000,
+        }
+    }
+}
+
+impl Into<PmcMorMoscRCF> for RCFreq {
+    fn into(self) -> PmcMorMoscRCF {
+        match self {
+            RCFreq::MHz_4 => PmcMorMoscRCF::MHz_4,
+            RCFreq::MHz_8 => PmcMorMoscRCF::MHz_8,
+            RCFreq::MHz_12 => PmcMorMoscRCF::MHz_12,
+        }
+    }
+}
+
+/// Represents a main clock source for SAM3X
 pub enum ClockSource {
     InternalSlow,
     InternalRc(RCFreq),
@@ -42,9 +103,7 @@ impl ClockSource {
 
         match self {
             &InternalSlow => SLOW_CLOCK_FREQ,
-            &InternalRc(MHz_4) => 4_000_000,
-            &InternalRc(MHz_8) => 8_000_000,
-            &InternalRc(MHz_12) => 12_000_000,
+            &InternalRc(ref rc_freq) => rc_freq.freq(),
             &Main(Some(f)) => f,
             &Main(None) => mck_freq(),
         }
@@ -54,7 +113,7 @@ impl ClockSource {
 const MAINF_SCALE: u32 = 32_768 / 16;
 /// Reads the main clock frequency from the PMC register.
 ///
-/// NOTE: Will wait until the main frequency is measured
+/// **NOTE**: Will wait until the main frequency is measured
 pub fn mck_freq() -> u32 {
     let pmc = unsafe { &reg::PMC };
 
@@ -63,6 +122,7 @@ pub fn mck_freq() -> u32 {
     cycles * MAINF_SCALE
 }
 
+/// PLL configuration for sam3x
 pub struct Pll {
     pub mul: u32,
     pub div: u32,
@@ -96,7 +156,7 @@ impl Pll {
         wait_for!(pmc.st.get().mckrdy());
 
         pmc.mckr.update()
-            .set_css(reg::pmc::mckr::Css::PplaClk);
+            .set_css(reg::pmc::mckr::Css::PllaClk);
         wait_for!(pmc.st.get().mckrdy());
     }
 
@@ -107,7 +167,7 @@ impl Pll {
 
 static FLASH_MAX_FREQ: u32 = 20_000_000;
 
-fn init_flash(clk_freq: u32) {
+pub fn init_flash(clk_freq: u32) {
     let (eefc0, eefc1) = unsafe {
         (&reg::EEFC0, &reg::EEFC1)
     };
@@ -196,7 +256,7 @@ pub fn temp_boot() {
 
     // Switch to PLLA
     pmc.mckr.update()
-        .set_css(PplaClk);
+        .set_css(PllaClk);
     wait_for!(pmc.st.get().mckrdy());
 
     ::hal::cortex_m3::systick::setup(24_000_000 / 1000);
@@ -211,11 +271,7 @@ fn init_rc_oscillator(freq: RCFreq) {
     // Enable MOSCRC
     pmc.mor.update()
         .set_moscrcen(true)
-        .set_moscrcf(match freq {
-            RCFreq::MHz_4 => reg::pmc::mor::Moscrcf::MHz_4,
-            RCFreq::MHz_8 => reg::pmc::mor::Moscrcf::MHz_8,
-            RCFreq::MHz_12 => reg::pmc::mor::Moscrcf::MHz_12,
-        })
+        .set_moscrcf(freq.into())
        .set_key(MOR_KEY);
     wait_for!(pmc.st.get().moscrcs());
 
@@ -237,6 +293,9 @@ fn init_main_oscillator(start_time: u32) {
     wait_for!(pmc.st.get().moscxts());
 
     pmc.mor.update()
+        .set_moscxten(true)
+        .set_moscrcen(true)
+        .set_moscxtst(start_time as u8)
         .set_moscsel(reg::pmc::mor::Moscsel::MOSCXT)
         .set_key(MOR_KEY);
     wait_for!(pmc.st.get().moscsels());
@@ -277,7 +336,7 @@ mod reg {
             0..1 => css {
                 0 => SlowClk,
                 1 => MainClk,
-                2 => PplaClk,
+                2 => PllaClk,
                 3 => UpplClk,
             },
             4..6 => pres {
@@ -320,3 +379,6 @@ mod reg {
         pub static EEFC1: eefc::Eefc;
     }
 }
+
+#[cfg(feature = "public_registers")]
+pub use self::reg;

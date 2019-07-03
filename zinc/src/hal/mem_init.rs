@@ -15,8 +15,10 @@ extern "C" {
 
 /// Helper function to initialize the stack limit.
 #[inline(always)]
-pub unsafe fn init_stack() {
-    stack::set_stack_limit((&_eglobals as *const u32) as u32);
+pub fn init_stack() {
+    unsafe {
+        stack::set_stack_limit((&_eglobals as *const u32) as u32);
+    };
 }
 
 /// Helper function to initialize memory.

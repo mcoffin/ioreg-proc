@@ -17,7 +17,7 @@ use core::option::Option;
 use core::option::Option::{Some, None};
 
 extern {
-  fn main();
+  fn main(_: isize, _: *const *const u8) -> isize;
   fn __STACK_BASE();
 
   fn isr_nmi();
@@ -35,11 +35,40 @@ extern {
 }
 
 #[no_mangle]
+pub extern "C" fn isr_systick_default() {
+}
+
+unsafe extern "C" fn reset_handler() {
+    use core::ptr;
+    use ::hal::mem_init;
+
+    mem_init::init_stack();
+    mem_init::init_data();
+
+    #[cfg(feature = "mcu_sam3x")]
+    ::hal::sam3x::scb::set_vector_offset();
+
+    let _status = main(0, ptr::null());
+
+    loop {
+        asm!("nop" :::: "volatile");
+    }
+}
+
+#[no_mangle]
 pub unsafe extern fn isr_handler_wrapper() {
   asm!(".weak isr_nmi, isr_hardfault, isr_mmfault, isr_busfault
-      .weak isr_usagefault, isr_svcall, isr_pendsv, isr_systick
+      .weak isr_usagefault, isr_svcall, isr_pendsv
       .weak isr_debugmon
       .weak isr_reserved_1
+
+      .thumb_func
+      isr_svcall:
+      b isr_pendsv
+
+      .thumb_func
+      isr_pendsv:
+      b.n isr_pendsv
 
       .thumb_func
       isr_nmi:
@@ -57,13 +86,7 @@ pub unsafe extern fn isr_handler_wrapper() {
       isr_usagefault:
 
       .thumb_func
-      isr_svcall:
-
-      .thumb_func
-      isr_pendsv:
-
-      .thumb_func
-      isr_systick:
+      isr_debugmon:
 
       b isr_default_fault
 
@@ -84,7 +107,7 @@ const ISRCount: usize = 16;
 #[no_mangle]
 pub static ISRVectors: [Option<unsafe extern fn()>; ISRCount] = [
   Some(__STACK_BASE),
-  Some(main),             // Reset
+  Some(reset_handler),             // Reset
   Some(isr_nmi),          // NMI
   Some(isr_hardfault),    // Hard Fault
   Some(isr_mmfault),      // CM3 Memory Management Fault
