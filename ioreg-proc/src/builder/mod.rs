@@ -318,6 +318,7 @@ pub(crate) fn build_register_struct(register: &Register) -> syn::Result<(Registe
     let update_ident = &struct_idents.update;
     let get_ident = &struct_idents.get;
     let struct_definition = quote! {
+        #[repr(C)]
         pub struct #struct_ident {
             value: ::volatile_cell::VolatileCell<#register_ty>,
         }

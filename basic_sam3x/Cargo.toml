@@ -1,0 +1,21 @@
+[package]
+name = "basic_sam3x"
+version = "0.1.0"
+authors = ["Matt Coffin <mcoffin13@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+panic-halt = "0.2.0"
+cortex-m = "0.6"
+
+[dependencies.ioreg-proc]
+path = "../ioreg-proc"
+
+[dependencies.volatile_cell]
+path = "../volatile_cell"
+
+[dependencies.cortex-m-rt]
+version = "0.6"
+features = ["device"]
